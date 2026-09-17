@@ -1,0 +1,17 @@
+# Minimal dependency manifest based on the actual imports used in
+# this project (CFG/, src/, scripts/).
+#
+# NOT covered by this file (not pip-installable; provided by the
+# CARLA distribution itself):
+#   - carla                          -> install the .whl matching your
+#                                        CARLA server version, or use
+#                                        `pip install carla==<version>`
+#   - agents.navigation.*            -> comes from
+#                                        <CARLA_ROOT>/PythonAPI/carla,
+#                                        added to sys.path at runtime
+#                                        by the scripts under scripts/
+
+easydict
+numpy
+pygame
+opencv-python

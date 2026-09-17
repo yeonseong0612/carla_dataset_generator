@@ -1,0 +1,35 @@
+<routes>
+  <route id="0" town="Town02">
+    <weathers>
+      <weather route_percentage="0" cloudiness="10.0" precipitation="0.0" precipitation_deposits="0.0" wetness="0.0" wind_intensity="10.0" sun_azimuth_angle="250.0" sun_altitude_angle="30.0" fog_density="10.0" fog_distance="60.0" fog_falloff="0.9" scattering_intensity="1.0" mie_scattering_scale="0.03"/>
+      <weather route_percentage="100" cloudiness="10.0" precipitation="0.0" precipitation_deposits="0.0" wetness="0.0" wind_intensity="10.0" sun_azimuth_angle="250.0" sun_altitude_angle="30.0" fog_density="10.0" fog_distance="60.0" fog_falloff="0.9" scattering_intensity="1.0" mie_scattering_scale="0.03"/>
+    </weathers>
+    <waypoints>
+      <position x="1.4" y="191.6" z="0.0"/>
+      <position x="88.0" y="191.6" z="0.0"/>
+      <position x="132.1" y="220.5" z="0.0"/>
+      <position x="164.4" y="240.9" z="0.0"/>
+      <position x="189.7" y="280.6" z="0.0"/>
+      <position x="102.7" y="302.5" z="0.0"/>
+      <position x="45.9" y="262.0" z="0.0"/>
+      <position x="90.6" y="240.9" z="0.0"/>
+      <position x="121.4" y="240.9" z="0.0"/>
+    </waypoints>
+    <scenarios/>
+  </route>
+  <route id="1" town="Town02">
+    <weathers>
+      <weather route_percentage="0" cloudiness="10.0" precipitation="0.0" precipitation_deposits="0.0" wetness="0.0" wind_intensity="10.0" sun_azimuth_angle="250.0" sun_altitude_angle="30.0" fog_density="10.0" fog_distance="60.0" fog_falloff="0.9" scattering_intensity="1.0" mie_scattering_scale="0.03"/>
+      <weather route_percentage="100" cloudiness="10.0" precipitation="0.0" precipitation_deposits="0.0" wetness="0.0" wind_intensity="10.0" sun_azimuth_angle="250.0" sun_altitude_angle="30.0" fog_density="10.0" fog_distance="60.0" fog_falloff="0.9" scattering_intensity="1.0" mie_scattering_scale="0.03"/>
+    </weathers>
+    <waypoints>
+      <position x="143.7" y="191.6" z="0.0"/>
+      <position x="193.7" y="164.7" z="0.0"/>
+      <position x="43.0" y="105.4" z="0.0"/>
+      <position x="-7.5" y="163.5" z="0.0"/>
+      <position x="-7.4" y="257.3" z="0.0"/>
+      <position x="33.6" y="306.5" z="0.0"/>
+    </waypoints>
+    <scenarios/>
+  </route>
+</routes>
