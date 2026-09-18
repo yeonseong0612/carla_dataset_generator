@@ -40,11 +40,11 @@ cfg.SENSOR = EasyDict()
 #################################################################
 
 cfg.SENSOR.CAMERA = EasyDict()
-cfg.SENSOR.CAMERA.WIDTH = 640
-cfg.SENSOR.CAMERA.HEIGHT = 375
-# cfg.SENSOR.CAMERA.WIDTH = 1280
-# cfg.SENSOR.CAMERA.HEIGHT = 512
-cfg.SENSOR.CAMERA.FOV = 81.8
+# cfg.SENSOR.CAMERA.WIDTH = 640
+# cfg.SENSOR.CAMERA.HEIGHT = 375
+cfg.SENSOR.CAMERA.WIDTH = 1024
+cfg.SENSOR.CAMERA.HEIGHT = 768
+cfg.SENSOR.CAMERA.FOV = 60.0
 cfg.SENSOR.CAMERA.FPS = 20
 
 cfg.SENSOR.CAMERA.X = 1.5
@@ -55,25 +55,49 @@ cfg.SENSOR.CAMERA.PITCH = 0.0
 cfg.SENSOR.CAMERA.YAW = 0.0
 
 cfg.SENSOR.STEREO = EasyDict()
-cfg.SENSOR.STEREO.BASELINE = 0.54
+cfg.SENSOR.STEREO.BASELINE = 0.24
 cfg.SENSOR.STEREO.LEFT_Y = -cfg.SENSOR.STEREO.BASELINE / 2.0
 cfg.SENSOR.STEREO.RIGHT_Y = cfg.SENSOR.STEREO.BASELINE / 2.0
 
 #################################################################
 ###  LiDAR
 #################################################################
-
 cfg.SENSOR.LIDAR = EasyDict()
-cfg.SENSOR.LIDAR.CHANNELS = 16
-cfg.SENSOR.LIDAR.RANGE = 120.0
-cfg.SENSOR.LIDAR.POINTS_PER_SECOND = 20000
-cfg.SENSOR.LIDAR.ROTATION_FREQUENCY = 10.0
-cfg.SENSOR.LIDAR.UPPER_FOV = 2.0
-cfg.SENSOR.LIDAR.LOWER_FOV = -24.3
 
-cfg.SENSOR.LIDAR.X = 0.0
+cfg.SENSOR.LIDAR.CHANNELS = 16
+
+cfg.SENSOR.LIDAR.RANGE = 130.0
+
+# rotation_frequency must complete >=1 full revolution per simulation
+# tick (rotation_frequency >= SIMULATION.FPS), otherwise the sensor's
+# per-tick azimuth sweep only covers a partial arc of the horizontal_fov
+# window (phase-dependent), showing up as a partial/half scan in a single
+# frame's saved point cloud instead of the full front-180 wedge.
+cfg.SENSOR.LIDAR.POINTS_PER_SECOND = 200000
+cfg.SENSOR.LIDAR.ROTATION_FREQUENCY = float(cfg.SIMULATION.FPS)
+
+cfg.SENSOR.LIDAR.HORIZONTAL_FOV = 180.0
+
+# LiDAR Vertical FOV Test: 64ch/200k's own point budget/channel count is
+# unchanged here -- only how the 64 channels are spread across elevation
+# is. Old (+2.0/-24.3, 26.3 deg span) biases almost all channels toward
+# the road surface a few meters out; new (+15/-15, 30 deg span, slightly
+# WIDER so per-channel spacing is actually a bit coarser: 30/63=0.476 deg
+# vs 26.3/63=0.417 deg) spends more of the 64 channels above the ground
+# plane where pedestrians/vehicles actually stand, trading a bit of
+# angular resolution for less road-only waste. Judged against real
+# object-level hit coverage, not the raw density numbers alone (see
+# outputs/lidar_fov_15_15_validation/).
+cfg.SENSOR.LIDAR.UPPER_FOV = 15.0
+cfg.SENSOR.LIDAR.LOWER_FOV = -15.0
+
+cfg.SENSOR.LIDAR.ROI_FRONT_MIN = 0.0
+cfg.SENSOR.LIDAR.ROI_FRONT_MAX = 120.0
+cfg.SENSOR.LIDAR.ROI_SIDE = 40.0
+
+cfg.SENSOR.LIDAR.X = 1.5
 cfg.SENSOR.LIDAR.Y = 0.0
-cfg.SENSOR.LIDAR.Z = 2.2
+cfg.SENSOR.LIDAR.Z = 1.6
 
 cfg.SENSOR.LIDAR.ROLL = 0.0
 cfg.SENSOR.LIDAR.PITCH = 0.0
@@ -87,7 +111,12 @@ cfg.SENSOR.RADAR = EasyDict()
 cfg.SENSOR.RADAR.HORIZONTAL_FOV = 60.0
 cfg.SENSOR.RADAR.VERTICAL_FOV = 20.0
 cfg.SENSOR.RADAR.RANGE =120.0
-cfg.SENSOR.RADAR.POINTS_PER_SECOND = 150000
+# Measured on Town10HD (60 frames, static-removed, ~15 nearby actors/frame):
+# 150000 PPS -> ~6866 returns/frame mean (~4.6% return ratio; CARLA ray
+# count != actual return count, so this is calibrated from the actual
+# measurement, not the raw PPS value). Lowered so 3-radar merged mean
+# lands near the 8k-12k preferred band instead of just above it (~12.6k).
+cfg.SENSOR.RADAR.POINTS_PER_SECOND = 100000
 
 cfg.SENSOR.RADAR.X = 2.3
 cfg.SENSOR.RADAR.Y = 0.0
@@ -98,6 +127,43 @@ cfg.SENSOR.RADAR.PITCH = 0.0
 cfg.SENSOR.RADAR.YAW = 0.0
 
 cfg.SENSOR.RADAR.FPS = 20
+
+# Front-corner radars. cfg.SENSOR.RADAR above stays the front-facing radar
+# (kept as-is / unrenamed for compatibility with existing code + data).
+# Positions/yaw verified against the actual vehicle.tesla.model3 bounding
+# box (half-width ~1.08m) and CARLA's yaw convention (yaw>0 rotates
+# forward toward +Y/right, confirmed via carla.Rotation.get_forward_vector()).
+cfg.SENSOR.RADAR_FRONT_LEFT = EasyDict()
+cfg.SENSOR.RADAR_FRONT_LEFT.HORIZONTAL_FOV = 90.0
+cfg.SENSOR.RADAR_FRONT_LEFT.VERTICAL_FOV = 20.0
+cfg.SENSOR.RADAR_FRONT_LEFT.RANGE = 60.0
+cfg.SENSOR.RADAR_FRONT_LEFT.POINTS_PER_SECOND = 60000
+
+cfg.SENSOR.RADAR_FRONT_LEFT.X = 2.0
+cfg.SENSOR.RADAR_FRONT_LEFT.Y = -0.9
+cfg.SENSOR.RADAR_FRONT_LEFT.Z = 0.5
+
+cfg.SENSOR.RADAR_FRONT_LEFT.ROLL = 0.0
+cfg.SENSOR.RADAR_FRONT_LEFT.PITCH = 0.0
+cfg.SENSOR.RADAR_FRONT_LEFT.YAW = -45.0
+
+cfg.SENSOR.RADAR_FRONT_LEFT.FPS = 20
+
+cfg.SENSOR.RADAR_FRONT_RIGHT = EasyDict()
+cfg.SENSOR.RADAR_FRONT_RIGHT.HORIZONTAL_FOV = 90.0
+cfg.SENSOR.RADAR_FRONT_RIGHT.VERTICAL_FOV = 20.0
+cfg.SENSOR.RADAR_FRONT_RIGHT.RANGE = 60.0
+cfg.SENSOR.RADAR_FRONT_RIGHT.POINTS_PER_SECOND = 60000
+
+cfg.SENSOR.RADAR_FRONT_RIGHT.X = 2.0
+cfg.SENSOR.RADAR_FRONT_RIGHT.Y = 0.9
+cfg.SENSOR.RADAR_FRONT_RIGHT.Z = 0.5
+
+cfg.SENSOR.RADAR_FRONT_RIGHT.ROLL = 0.0
+cfg.SENSOR.RADAR_FRONT_RIGHT.PITCH = 0.0
+cfg.SENSOR.RADAR_FRONT_RIGHT.YAW = 45.0
+
+cfg.SENSOR.RADAR_FRONT_RIGHT.FPS = 20
 
 #################################################################
 ### GNSS
@@ -149,7 +215,7 @@ cfg.SENSOR.IMU.NOISE_SEED = 42
 #################################################################
 
 cfg.TRAFFIC = EasyDict()
-cfg.TRAFFIC.NUM_VEHICLES = 20
+cfg.TRAFFIC.NUM_VEHICLES = 40
 cfg.TRAFFIC.NUM_CYCLISTS = 4
 cfg.TRAFFIC.NUM_MOTORCYCLISTS = 4
 
@@ -175,6 +241,172 @@ cfg.PEDESTRIAN.RUN_PERCENTAGE = 0.0
 cfg.PEDESTRIAN.CROSS_PERCENTAGE = 0.1
 
 #################################################################
+### Spawn Policy (Phase 1 -- route-relative Gamma initial placement)
+#################################################################
+
+cfg.SPAWN = EasyDict()
+
+cfg.SPAWN.SEED = 42
+
+# s ~ Gamma(shape, scale); mean = shape*scale = 30m, mode = (shape-1)*scale = 15m
+cfg.SPAWN.GAMMA_SHAPE = 2.0
+cfg.SPAWN.GAMMA_SCALE = 15.0
+
+cfg.SPAWN.MIN_DISTANCE = 10.0
+cfg.SPAWN.MAX_DISTANCE = 100.0
+
+cfg.SPAWN.N_VEHICLES = 25
+cfg.SPAWN.N_MOTORCYCLES = 4
+cfg.SPAWN.N_BICYCLES = 2
+cfg.SPAWN.N_PEDESTRIANS = 8
+
+cfg.SPAWN.MIN_EGO_SPACING = 10.0
+
+# Lane-aware spacing (Phase 1 iteration 2): the 8m rule only applies
+# longitudinally within the SAME driving lane (vehicle/motorcycle/
+# bicycle share this pool); a candidate on a different lane only needs
+# to clear a small anti-overlap distance from other vehicle-like actors.
+cfg.SPAWN.MIN_VEHICLE_SPACING = 8.0
+cfg.SPAWN.MIN_CROSS_LANE_SPACING = 3.0
+
+cfg.SPAWN.MIN_PEDESTRIAN_SPACING = 2.5
+
+cfg.SPAWN.MAX_ATTEMPTS = 20
+
+#################################################################
+### Spawn Policy Phase 2 -- dynamic density maintenance
+#################################################################
+
+cfg.SPAWN.BIN_SIZE = 10.0
+
+cfg.SPAWN.UPDATE_INTERVAL_FRAMES = 20
+cfg.SPAWN.MAX_NEW_ACTORS_PER_UPDATE = 3
+
+cfg.SPAWN.DESPAWN_BEHIND_DISTANCE = 40.0
+cfg.SPAWN.FORWARD_CLEANUP_DISTANCE = 150.0
+
+#################################################################
+### Spawn Policy Phase 2.5 -- dynamic spawn stability fixes
+#################################################################
+
+# A managed actor that fails route projection for this many consecutive
+# updates (>= MAX_PROJECTION_FAILURE_UPDATES) is despawned -- diagnosed
+# in Phase 2.5: without this, a projection-failed actor has no relative_s
+# and therefore never reaches the normal despawn check, accumulating in
+# the registry indefinitely (one actor failed 25 updates straight).
+cfg.SPAWN.MAX_PROJECTION_FAILURE_UPDATES = 10
+
+# Same threshold used for "is this actor still on the route corridor",
+# now also the trigger for the escalating search-window recovery in
+# DynamicSpawnManager (normal -> expanded -> full-route fallback).
+cfg.SPAWN.MAX_ROUTE_PROJECTION_DISTANCE = 20.0
+
+# Diagnosed in Phase 2.5: a same-lane vehicle spawned 10-20m ahead of ego
+# reads to BasicAgent as a close lead vehicle and repeatedly stalls ego.
+# Corner/adjacent-lane spawns are unaffected -- only same road_id AND
+# same lane_id as ego, closer than this, is rejected.
+cfg.SPAWN.MIN_SAME_LANE_EGO_SPAWN_DISTANCE = 30.0
+
+#################################################################
+### Canonical Background Traffic Policy
+### (src/simulation/canonical_traffic.py -- replaces Phase 2/2.5's
+### per-bin Gamma-deficit replenishment as the production default;
+### DynamicSpawnManager above is kept unmodified/unused, not deleted)
+#################################################################
+
+# Visible/training ROI reuses cfg.SENSOR.LIDAR.ROI_FRONT_MAX (0-120m) --
+# not duplicated here. New actors are never spawned inside it; they only
+# ever enter it by natural forward motion after being placed in the
+# buffer zone ahead (120m < relative_s <= CANONICAL_BUFFER_MAX).
+# Despawn-behind reuses cfg.SPAWN.DESPAWN_BEHIND_DISTANCE (40m).
+cfg.SPAWN.CANONICAL_BUFFER_MAX = 160.0
+
+# Each background vehicle gets one fixed +/- this percent TM
+# vehicle_percentage_speed_difference, drawn once at spawn time from the
+# seeded RNG (deterministic, not TM's own randomization) -- enough that a
+# stream of vehicles isn't perfectly lockstep, without introducing
+# cut-in/lane-change interactions (auto_lane_change is forced OFF).
+cfg.SPAWN.CANONICAL_SPEED_JITTER_PCT = 10.0
+
+# Bus is excluded from spawn eligibility entirely (task: "Remove Bus
+# Completely from Canonical Dataset Traffic") -- see is_bus_blueprint in
+# src/simulation/traffic.py, applied in both GammaSpawnPolicy.__init__
+# (src/simulation/spawn_policy.py) and CanonicalBackgroundTraffic.
+# __init__ (src/simulation/canonical_traffic.py). No config parameter
+# needed for a hard exclusion; a prior frequency-management version of
+# this policy (BUS_SUBTYPE_WEIGHT/MAX_MANAGED_BUSES/MAX_VISIBLE_BUSES/
+# BUS_SAME_LANE_MIN_DISTANCE) was tried and removed after live
+# validation showed an unweighted Phase-1 bus could still dominate the
+# scene -- see outputs/bus_policy_live_validation/ for that record.
+
+#################################################################
+### Frame-Level Gamma Object Count Policy
+### (src/simulation/canonical_traffic.py FrameObjectGammaSchedule --
+### THIS is the production density target: Gamma is applied to
+### N_objects(frame), NOT to object distance. cfg.SPAWN.GAMMA_SHAPE/
+### GAMMA_SCALE/MIN_DISTANCE/MAX_DISTANCE above stay distance-domain and
+### are kept only for Phase 1's lane/waypoint sampling + backward
+### compatibility -- they are no longer the density-shaping target in
+### canonical production mode.)
+#################################################################
+
+# target ~ round(Gamma(shape, scale)), clipped to
+# [FRAME_OBJECT_MIN, FRAME_OBJECT_MAX]. mode = (shape-1)*scale = 8,
+# mean = shape*scale = 9 -- tune against the actual histogram in
+# outputs/frame_object_gamma_validation/, not hard-coded.
+#
+# Recalibration ("Recalibrate Gamma Target to Camera-Valid Object
+# Count" task): the prior shape=5.0/scale=2.0/min=2/max=18 (mode=8,
+# mean=10) was calibrated BEFORE the Gamma controller's actual_count
+# input switched to the camera-valid annotation count (see
+# src/data/annotation.py AnnotationWriter._compute_camera_validity /
+# get_annotation_candidate_count). Camera-valid filtering roughly halves
+# the visible count vs. the old distance-only basis (~50% retention,
+# see outputs/final_integration_validation/), so the OLD target (mean
+# 12.03 once segment sampling is included) sat far above what the new,
+# stricter count could ever reach -- observed live: mean_actual=5.45,
+# within +/-2 only 12.8%, controller stuck in a near-permanent
+# under-target/spawn-more state (population drifting upward, 11->30
+# over 1500 frames, 0 prunes the entire run -- see CLAUDE.md task
+# history / outputs/final_integration_validation/final_integration_
+# summary.json for the full diagnosis). shape/scale/min/max are the
+# ONLY things this recalibration changes -- FrameObjectGammaSchedule's
+# sampling code, the spawn/prune controller, and the camera-valid
+# filtering pipeline are all untouched.
+cfg.SPAWN.FRAME_OBJECT_GAMMA_SHAPE = 9.0
+cfg.SPAWN.FRAME_OBJECT_GAMMA_SCALE = 1.0
+
+cfg.SPAWN.FRAME_OBJECT_MIN = 4
+cfg.SPAWN.FRAME_OBJECT_MAX = 15
+
+# A single Gamma-drawn target is held for a whole segment of consecutive
+# frames (segment length itself uniform-random in this range), never
+# resampled every frame -- resampling every frame makes the target
+# whiplash frame-to-frame, which the spawn/despawn control loop can never
+# actually track and just produces unnatural traffic churn.
+#
+# Controller-fix task: long-run validation (outputs/frame_object_gamma_
+# longrun_3000/) measured actor lifetime ~15-16s against the old 2-5s
+# (40-100 frame) segment duration -- a 4-5x time-scale mismatch that let
+# managed population grow unboundedly across segments (11->33) and
+# eventually hard-stalled ego around frame ~780. Raised to bring segment
+# duration close to the measured actor lifetime instead.
+cfg.SPAWN.FRAME_OBJECT_TARGET_INTERVAL_MIN = 240
+cfg.SPAWN.FRAME_OBJECT_TARGET_INTERVAL_MAX = 400
+
+# Gradual convergence: caps how many new buffer-zone actors
+# CanonicalBackgroundTraffic may spawn in a single update() call to close
+# a frame-object deficit (never spawns the whole deficit in one update).
+cfg.SPAWN.FRAME_OBJECT_MAX_NEW_PER_UPDATE = 2
+
+# Symmetric downward control (controller-fix task): caps how many
+# not-yet-visible ("future entrant") buffer-zone actors
+# CanonicalBackgroundTraffic may prune in a single update() call to close
+# an over-target excess. Visible-ROI actors are never eligible -- see
+# CanonicalBackgroundTraffic.update()'s pruning block.
+cfg.SPAWN.FRAME_OBJECT_MAX_PRUNE_PER_UPDATE = 2
+
+#################################################################
 ### Annotation
 #################################################################
 
@@ -184,6 +416,28 @@ cfg.ANNOTATION.MAX_DISTANCE = 100.0
 cfg.ANNOTATION.CLASSES = ["pedestrian", "vehicle", "cyclist", "motorcyclist"]
 
 cfg.ANNOTATION.VEHICLE_SUBTYPES = ["car", "van", "truck", "bus"]
+
+#################################################################
+### Camera-valid annotation filtering (left RGB camera only -- see
+### src/data/annotation.py AnnotationWriter / src/data/projection.py)
+#################################################################
+
+# image_fraction = (projected bbox area clipped to the image) /
+# (unclipped projected bbox area). Filters actors that are mostly
+# outside the frame / truncated at its edge.
+cfg.ANNOTATION.MIN_IMAGE_FRACTION = 0.20
+
+# visible_fraction = (pixels within the clipped 2D bbox whose depth-
+# image value is not nearer than the object's own closest projected
+# vertex) / (total pixels within the clipped 2D bbox). Filters actors
+# mostly hidden behind something closer to the camera.
+cfg.ANNOTATION.MIN_VISIBLE_FRACTION = 0.20
+
+# Minimum pixel footprint of the final CLIPPED 2D bbox. All three must
+# hold, or the actor is filtered as too_small.
+cfg.ANNOTATION.MIN_BBOX_WIDTH_PX = 5
+cfg.ANNOTATION.MIN_BBOX_HEIGHT_PX = 10
+cfg.ANNOTATION.MIN_VISIBLE_AREA_PX = 50
 
 #################################################################
 ### weather conditions

@@ -182,7 +182,7 @@ def main():
         sensors.append(lidar)
         sensor_queues["lidar"] = lidar_queue
 
-        radar = spawn_sensor(world, ego, create_radar_blueprint(world, cfg), create_radar_transform(cfg))
+        radar = spawn_sensor(world, ego, create_radar_blueprint(world, cfg.SENSOR.RADAR), create_radar_transform(cfg.SENSOR.RADAR))
         radar_queue = queue.Queue()
         radar.listen(radar_queue.put)
         sensors.append(radar)

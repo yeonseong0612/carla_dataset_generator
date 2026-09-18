@@ -801,6 +801,7 @@ def main():
             sequence_root=(
                 SEQUENCE_ROOT
             ),
+            cfg=cfg,
             timeout=10.0,
         )
 

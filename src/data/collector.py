@@ -20,6 +20,8 @@ sequence_root/
 ├─ semantic/
 ├─ lidar/
 ├─ radar/
+├─ radar_front_left/
+├─ radar_front_right/
 └─ navigation/
    ├─ gnss.csv
    └─ imu.csv
@@ -38,6 +40,7 @@ import time
 
 import numpy as np
 
+from src.sensors.lidar import create_lidar_transform
 
 # ============================================================
 # Synchronization
@@ -235,6 +238,71 @@ def lidar_to_numpy(data):
 
     return points.copy()
 
+def filter_lidar_roi(
+    points,
+    T_ego_from_lidar,
+    cfg,
+):
+    """
+    Filter LiDAR points using an ego-frame rectangular ROI.
+
+    ROI:
+        x_ego: [ROI_FRONT_MIN, ROI_FRONT_MAX]
+        y_ego: [-ROI_SIDE, +ROI_SIDE]
+
+    Notes
+    -----
+    - Input/output points remain in the LiDAR sensor frame:
+        [x_lidar, y_lidar, z_lidar, intensity]
+
+    - Ego coordinates are used only for ROI selection.
+    """
+
+    if len(points) == 0:
+        return points
+
+    # --------------------------------------------------------
+    # LiDAR local -> Ego
+    # --------------------------------------------------------
+
+    xyz_lidar = points[:, :3].astype(
+        np.float64,
+        copy=False,
+    )
+
+    ones = np.ones(
+        (len(points), 1),
+        dtype=np.float64,
+    )
+
+    xyz1_lidar = np.concatenate(
+        [xyz_lidar, ones],
+        axis=1,
+    )
+
+    xyz1_ego = (
+        T_ego_from_lidar
+        @ xyz1_lidar.T
+    ).T
+
+    xyz_ego = xyz1_ego[:, :3]
+
+    # --------------------------------------------------------
+    # Rectangular ROI in ego frame
+    # --------------------------------------------------------
+
+    x_ego = xyz_ego[:, 0]
+    y_ego = xyz_ego[:, 1]
+
+    mask = (
+        (x_ego >= cfg.SENSOR.LIDAR.ROI_FRONT_MIN)
+        & (x_ego <= cfg.SENSOR.LIDAR.ROI_FRONT_MAX)
+        & (np.abs(y_ego) <= cfg.SENSOR.LIDAR.ROI_SIDE)
+    )
+
+    # Keep original LiDAR-frame coordinates.
+    return points[mask]
+
 
 def radar_to_numpy(data):
     """
@@ -311,6 +379,8 @@ class Collector:
             semantic
             lidar
             radar
+            radar_front_left
+            radar_front_right
             gnss
             imu
 
@@ -328,6 +398,12 @@ class Collector:
         Maximum waiting time for each synchronized frame.
     """
 
+    RADAR_SENSORS = (
+        "radar",
+        "radar_front_left",
+        "radar_front_right",
+    )
+
     REQUIRED_SENSORS = (
         "rgb_left",
         "rgb_right",
@@ -335,7 +411,7 @@ class Collector:
         "optical_flow",
         "semantic",
         "lidar",
-        "radar",
+    ) + RADAR_SENSORS + (
         "gnss",
         "imu",
     )
@@ -344,9 +420,11 @@ class Collector:
         self,
         rig,
         sequence_root,
+        cfg,
         timeout=10.0,
     ):
         self.rig = rig
+        self.cfg = cfg
 
         self.sequence_root = os.path.abspath(
             sequence_root
@@ -354,6 +432,15 @@ class Collector:
 
         self.timeout = float(
             timeout
+        )
+
+        lidar_transform = create_lidar_transform(
+            cfg
+        )
+
+        self.T_ego_from_lidar = np.array(
+            lidar_transform.get_matrix(),
+            dtype=np.float64,
         )
 
         self.dirs = {}
@@ -415,8 +502,7 @@ class Collector:
             "optical_flow",
             "semantic",
             "lidar",
-            "radar",
-        )
+        ) + self.RADAR_SENSORS
 
         for name in sensor_dirs:
 
@@ -632,13 +718,20 @@ class Collector:
             packet["semantic"]
         )
 
-        lidar = lidar_to_numpy(
+        lidar_raw = lidar_to_numpy(
             packet["lidar"]
         )
 
-        radar = radar_to_numpy(
-            packet["radar"]
+        lidar = filter_lidar_roi(
+            lidar_raw,
+            self.T_ego_from_lidar,
+            self.cfg,
         )
+
+        radar_arrays = {
+            name: radar_to_numpy(packet[name])
+            for name in self.RADAR_SENSORS
+        }
 
         # ----------------------------------------------------
         # Save arrays
@@ -676,13 +769,14 @@ class Collector:
             lidar,
         )
 
-        np.save(
-            os.path.join(
-                self.dirs["radar"],
-                f"{frame_name}.npy",
-            ),
-            radar,
-        )
+        for name, radar_array in radar_arrays.items():
+            np.save(
+                os.path.join(
+                    self.dirs[name],
+                    f"{frame_name}.npy",
+                ),
+                radar_array,
+            )
 
         # ----------------------------------------------------
         # GNSS
@@ -754,12 +848,31 @@ class Collector:
                 semantic.shape
             ),
 
+            "lidar_points_raw": int(
+                len(lidar_raw)
+            ),
+
             "lidar_points": int(
                 len(lidar)
             ),
 
+            # Kept for backward compatibility: the front radar's count
+            # (radar_arrays["radar"]), same meaning as before this sensor
+            # was joined by front-left/front-right corner radars.
             "radar_points": int(
-                len(radar)
+                len(radar_arrays["radar"])
+            ),
+
+            "radar_front_left_points": int(
+                len(radar_arrays["radar_front_left"])
+            ),
+
+            "radar_front_right_points": int(
+                len(radar_arrays["radar_front_right"])
+            ),
+
+            "radar_points_merged": int(
+                sum(len(array) for array in radar_arrays.values())
             ),
         }
 

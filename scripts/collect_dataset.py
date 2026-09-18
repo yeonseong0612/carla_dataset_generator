@@ -33,6 +33,7 @@ are already implemented.
 
 import argparse
 import csv
+import json
 import os
 import shutil
 import sys
@@ -79,16 +80,25 @@ from src.navigation.controller import RouteController
 
 from src.simulation.vehicle import destroy_vehicle
 
+from src.simulation.environment import disable_static_traffic_objects
+
 from src.simulation.traffic import (
     configure_traffic_manager,
-    spawn_traffic_vehicles,
     destroy_traffic_vehicles,
 )
 
 from src.simulation.pedestrian import (
-    spawn_pedestrians,
-    start_pedestrians,
     destroy_pedestrians,
+)
+
+from src.simulation.spawn_policy import (
+    DynamicSpawnManager,
+    spawn_actors_gamma_policy,
+)
+from src.simulation.canonical_traffic import (
+    CanonicalBackgroundTraffic,
+    get_annotation_candidate_count,
+    scale_initial_category_counts,
 )
 
 from src.sensors.sensor_rig import SensorRig
@@ -198,6 +208,22 @@ def parse_args():
         help="Disable pedestrians.",
     )
 
+    parser.add_argument(
+        "--background-policy",
+        type=str,
+        default="canonical",
+        choices=["canonical", "dynamic"],
+        help=(
+            "Background traffic maintenance policy. 'canonical' (default): "
+            "actors are only ever spawned in a buffer zone ahead of the "
+            "visible sensor ROI, never inside it (see "
+            "src/simulation/canonical_traffic.py). 'dynamic': the earlier "
+            "Phase 2/2.5 per-bin Gamma-deficit replenishment "
+            "(src/simulation/spawn_policy.py DynamicSpawnManager), kept "
+            "for reference/comparison, not the production default."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -211,6 +237,33 @@ def route_xml_path(town):
         "routes",
         f"{town}.xml",
     )
+
+
+def resolve_carla_map_name(xml_path):
+    """
+    The route XML's declared town (the actual client.load_world()
+    identifier, e.g. "Town10HD") can differ from the --towns key /
+    routes/<town>.xml filename stem (e.g. "Town10"). Read it from the
+    XML itself rather than guessing a naming suffix.
+    """
+
+    route_ids = list_route_ids(xml_path)
+
+    if not route_ids:
+        raise ValueError(f"No routes found in {xml_path}")
+
+    town_names = {
+        load_route_from_xml(xml_path, route_id)[0]
+        for route_id in route_ids
+    }
+
+    if len(town_names) != 1:
+        raise ValueError(
+            f"Route XML {xml_path} declares multiple town values: "
+            f"{sorted(town_names)}"
+        )
+
+    return next(iter(town_names))
 
 
 def sequence_root(
@@ -412,6 +465,8 @@ def validate_sequence(
         "semantic": ".npy",
         "lidar": ".npy",
         "radar": ".npy",
+        "radar_front_left": ".npy",
+        "radar_front_right": ".npy",
     }
 
     for directory, extension in (
@@ -551,6 +606,7 @@ def collect_sequence(
     overwrite=False,
     no_traffic=False,
     no_pedestrians=False,
+    background_policy="canonical",
 ):
 
     root = sequence_root(
@@ -597,6 +653,11 @@ def collect_sequence(
     traffic_actors = {}
     walkers = []
     walker_controllers = []
+
+    spawn_manager = None
+
+    frame_object_csv_file = None
+    frame_object_csv_writer = None
 
     saved_frames = 0
 
@@ -666,41 +727,104 @@ def collect_sequence(
         )
 
         # ====================================================
-        # Traffic
+        # Gamma-policy initial actor spawn
+        # (route-relative, initial spawn only -- see
+        # src/simulation/spawn_policy.py)
         # ====================================================
 
-        if not no_traffic:
-
-            traffic_actors = (
-                spawn_traffic_vehicles(
-                    world,
-                    traffic_manager,
-                    ego,
-                    cfg,
-                )
+        if background_policy == "canonical":
+            # CLAUDE.md task section 12: the initial scene should be
+            # sized around the first frame-object Gamma segment's
+            # target, not the old fixed cfg.SPAWN.N_*-sum population.
+            # Composition ratio preserved; safe-route spawn + spacing
+            # checks below can still legitimately place fewer.
+            initial_counts = scale_initial_category_counts(
+                cfg, no_traffic=no_traffic, no_pedestrians=no_pedestrians,
             )
-
-        # ====================================================
-        # Pedestrians
-        # ====================================================
-
-        if not no_pedestrians:
-
-            (
-                walkers,
-                walker_controllers,
-                walker_speeds,
-            ) = spawn_pedestrians(
+            print(
+                f"[FrameObjectGamma] initial scene target="
+                f"{initial_counts['initial_frame_object_target']} -> "
+                f"vehicles={initial_counts['n_vehicles']} "
+                f"motorcycles={initial_counts['n_motorcycles']} "
+                f"bicycles={initial_counts['n_bicycles']} "
+                f"pedestrians={initial_counts['n_pedestrians']}"
+            )
+            spawn_result = spawn_actors_gamma_policy(
                 world,
+                ego,
+                dense_route,
+                traffic_manager,
                 cfg,
+                n_vehicles=initial_counts["n_vehicles"],
+                n_motorcycles=initial_counts["n_motorcycles"],
+                n_bicycles=initial_counts["n_bicycles"],
+                n_pedestrians=initial_counts["n_pedestrians"],
+            )
+        else:
+            spawn_result = spawn_actors_gamma_policy(
+                world,
+                ego,
+                dense_route,
+                traffic_manager,
+                cfg,
+                n_vehicles=0 if no_traffic else None,
+                n_motorcycles=0 if no_traffic else None,
+                n_bicycles=0 if no_traffic else None,
+                n_pedestrians=0 if no_pedestrians else None,
             )
 
-            start_pedestrians(
+        traffic_actors = spawn_result["traffic_actors"]
+        walkers = spawn_result["walkers"]
+        walker_controllers = spawn_result["walker_controllers"]
+        walker_speeds = spawn_result["walker_speeds"]
+
+        # ====================================================
+        # Background traffic maintenance policy
+        # (continues the exact same RNG stream the initial spawn
+        # used -- see src/simulation/spawn_policy.py /
+        # src/simulation/canonical_traffic.py)
+        # ====================================================
+
+        if background_policy == "dynamic":
+            spawn_manager = DynamicSpawnManager(
                 world,
-                walker_controllers,
-                walker_speeds,
+                ego,
+                dense_route,
+                traffic_manager,
                 cfg,
+                spawn_result["rng"],
+                category_totals={
+                    "vehicle": 0 if no_traffic else cfg.SPAWN.N_VEHICLES,
+                    "motorcyclist": 0 if no_traffic else cfg.SPAWN.N_MOTORCYCLES,
+                    "cyclist": 0 if no_traffic else cfg.SPAWN.N_BICYCLES,
+                    "pedestrian": 0 if no_pedestrians else cfg.SPAWN.N_PEDESTRIANS,
+                },
             )
+        else:
+            spawn_manager = CanonicalBackgroundTraffic(
+                world,
+                ego,
+                dense_route,
+                traffic_manager,
+                cfg,
+                spawn_result["rng"],
+                category_totals={
+                    "vehicle": 0 if no_traffic else cfg.SPAWN.N_VEHICLES,
+                    "motorcyclist": 0 if no_traffic else cfg.SPAWN.N_MOTORCYCLES,
+                    "cyclist": 0 if no_traffic else cfg.SPAWN.N_BICYCLES,
+                    "pedestrian": 0 if no_pedestrians else cfg.SPAWN.N_PEDESTRIANS,
+                },
+            )
+
+        spawn_manager.register_initial_actors(spawn_result)
+
+        if not no_pedestrians and walkers:
+
+            # Walks initial pedestrians along their own sidewalk (not
+            # start_pedestrians()'s map-wide random destination) so they
+            # stay trackable in the route corridor -- see
+            # DynamicSpawnManager.start_initial_pedestrians().
+            spawn_manager.start_initial_pedestrians()
 
         # ====================================================
         # Sensor rig
@@ -766,6 +890,7 @@ def collect_sequence(
         collector = Collector(
             rig=rig,
             sequence_root=root,
+            cfg=cfg,
             timeout=(
                 COLLECTOR_TIMEOUT
             ),
@@ -798,8 +923,31 @@ def collect_sequence(
             AnnotationWriter(
                 root,
                 cfg,
+                ego=ego,
+                left_camera_actor=rig.get_sensor("rgb_left"),
             )
         )
+
+        # ====================================================
+        # Frame-Level Gamma Object Count Policy: per-frame
+        # target/actual log (canonical policy only -- see
+        # src/simulation/canonical_traffic.py FrameObjectGammaSchedule)
+        # ====================================================
+
+        if background_policy == "canonical":
+            frame_object_csv_file = open(
+                os.path.join(root, "frame_object_counts.csv"),
+                "w",
+                newline="",
+                encoding="utf-8",
+            )
+            frame_object_csv_writer = csv.writer(frame_object_csv_file)
+            frame_object_csv_writer.writerow([
+                "frame_id", "target_object_count", "actual_object_count",
+                "managed_population", "visible_population", "buffer_population",
+                "spawned_this_frame", "pruned_this_frame", "naturally_despawned_this_frame",
+                "cumulative_spawned", "cumulative_pruned", "cumulative_natural_despawn",
+            ])
 
         # ====================================================
         # Warmup
@@ -819,6 +967,15 @@ def collect_sequence(
         # ====================================================
         # Main loop
         # ====================================================
+
+        # visible_population/buffer_population only change at
+        # spawn_manager.update()'s own cadence (recomputing them every
+        # frame would mean re-running route projection for every managed
+        # actor every frame) -- these hold their last-known value between
+        # updates, same convention as the target/actual columns already
+        # did before this task.
+        last_visible_population = 0
+        last_buffer_population = 0
 
         for local_frame_id in range(
             max_frames
@@ -920,10 +1077,73 @@ def collect_sequence(
                     local_frame_id,
                     world,
                     ego,
+                    depth_raw=packet["depth"],
                 )
             )
 
             saved_frames += 1
+
+            # ------------------------------------------------
+            # Phase 2: dynamic density maintenance
+            #
+            # Runs after this frame's sensors/annotation are already
+            # captured and saved, so any actor spawned/despawned here
+            # only takes effect starting from the *next* world.tick() --
+            # it never disturbs the frame just collected.
+            #
+            # Computed before the CSV write below (not after, as in the
+            # prior frame-object-Gamma task) so spawned/pruned/despawned-
+            # this-frame and the cumulative_* columns can reflect THIS
+            # update if one ran on this frame.
+            # ------------------------------------------------
+
+            current_object_count = get_annotation_candidate_count(annotation_counts)
+
+            spawned_this_frame = 0
+            pruned_this_frame = 0
+            naturally_despawned_this_frame = 0
+
+            if (
+                spawn_manager is not None
+                and local_frame_id % cfg.SPAWN.UPDATE_INTERVAL_FRAMES == 0
+            ):
+                if background_policy == "canonical":
+                    update_snapshot = spawn_manager.update(
+                        local_frame_id,
+                        current_object_count=current_object_count,
+                    )
+                    spawned_this_frame = update_snapshot["spawned"]
+                    pruned_this_frame = update_snapshot.get("pruned_this_update", 0)
+                    naturally_despawned_this_frame = update_snapshot["despawned"]
+                    last_visible_population = update_snapshot["visible_population"]
+                    last_buffer_population = update_snapshot["buffer_population"]
+                else:
+                    spawn_manager.update(
+                        local_frame_id
+                    )
+
+            # ------------------------------------------------
+            # Frame-Level Gamma Object Count Policy: per-frame
+            # target/actual/population/spawn-prune-despawn log
+            # (every frame; spawned/pruned/despawned-this-frame are 0 on
+            # frames where spawn_manager.update() didn't run this frame).
+            # ------------------------------------------------
+
+            if frame_object_csv_writer is not None:
+                frame_object_csv_writer.writerow([
+                    local_frame_id,
+                    spawn_manager.frame_object_schedule.target_for_frame(local_frame_id),
+                    current_object_count,
+                    len(spawn_manager.managed_actors),
+                    last_visible_population,
+                    last_buffer_population,
+                    spawned_this_frame,
+                    pruned_this_frame,
+                    naturally_despawned_this_frame,
+                    spawn_manager.total_spawned,
+                    spawn_manager.total_density_pruned,
+                    spawn_manager.total_despawned,
+                ])
 
             # ------------------------------------------------
             # Periodic flush
@@ -936,6 +1156,9 @@ def collect_sequence(
             ):
                 collector.flush()
                 metadata.flush()
+
+                if frame_object_csv_file is not None:
+                    frame_object_csv_file.flush()
 
             # ------------------------------------------------
             # Status
@@ -1108,26 +1331,98 @@ def collect_sequence(
                     f"rig: {exc}"
                 )
 
-        try:
-            destroy_pedestrians(
-                walkers,
-                walker_controllers,
-            )
-        except Exception as exc:
-            print(
-                "[Cleanup] "
-                f"pedestrians: {exc}"
-            )
+        if frame_object_csv_file is not None:
 
-        try:
-            destroy_traffic_vehicles(
-                traffic_actors
-            )
-        except Exception as exc:
-            print(
-                "[Cleanup] "
-                f"traffic: {exc}"
-            )
+            try:
+                frame_object_csv_file.close()
+            except Exception as exc:
+                print(
+                    "[Cleanup] "
+                    f"frame_object_csv: {exc}"
+                )
+
+        # Frame-Level Gamma Object Count Policy: spawn/despawn summary
+        # (CLAUDE.md task section 18) -- written here (not the
+        # try-block's normal "Finalize" section) because a 600-frame
+        # validation run legitimately raises "Maximum frame count
+        # reached before route completion" without ever reaching that
+        # section; finally always runs regardless.
+        if spawn_manager is not None and hasattr(spawn_manager, "frame_object_schedule"):
+
+            try:
+                summary = {
+                    "total_spawned": spawn_manager.total_spawned,
+                    "total_despawned": spawn_manager.total_despawned,
+                    "total_despawned_behind": spawn_manager.total_despawned_behind,
+                    "total_despawned_forward_cleanup": spawn_manager.total_despawned_forward_cleanup,
+                    "total_projection_failure_despawns": spawn_manager.total_projection_failure_despawns,
+                    "total_same_lane_spawn_rejections": spawn_manager.total_same_lane_spawn_rejections,
+                    "spawned_inside_visible_roi": spawn_manager.total_spawned_inside_visible_roi,
+                    "spawned_inside_buffer": spawn_manager.total_spawned_inside_buffer,
+                    "max_new_actors_in_single_update": max(
+                        (h["spawned"] for h in spawn_manager.history), default=0,
+                    ),
+                    "frame_object_max_new_per_update_cfg": cfg.SPAWN.FRAME_OBJECT_MAX_NEW_PER_UPDATE,
+                    # Controller-fix task: symmetric downward-control stats.
+                    "total_density_pruned": spawn_manager.total_density_pruned,
+                    "pruned_inside_visible_roi": spawn_manager.total_pruned_inside_visible_roi,
+                    "max_pruned_in_single_update": max(
+                        (h.get("pruned_this_update", 0) for h in spawn_manager.history), default=0,
+                    ),
+                    "frame_object_max_prune_per_update_cfg": cfg.SPAWN.FRAME_OBJECT_MAX_PRUNE_PER_UPDATE,
+                    "frame_object_target_interval_min_cfg": cfg.SPAWN.FRAME_OBJECT_TARGET_INTERVAL_MIN,
+                    "frame_object_target_interval_max_cfg": cfg.SPAWN.FRAME_OBJECT_TARGET_INTERVAL_MAX,
+                    "final_managed_population": len(spawn_manager.managed_actors),
+                    "updates": spawn_manager.update_index,
+                }
+
+                with open(os.path.join(root, "canonical_spawn_summary.json"), "w", encoding="utf-8") as f:
+                    json.dump(summary, f, indent=2)
+            except Exception as exc:
+                print(
+                    "[Cleanup] "
+                    f"canonical_spawn_summary: {exc}"
+                )
+
+        # spawn_manager.managed_actors is the authoritative superset of
+        # every actor still alive at this point -- the initial Gamma
+        # spawn plus everything Phase 2 replenishment added since (some
+        # of the original walkers/traffic_actors may already be gone,
+        # despawned by spawn_manager.update() during the run). Destroy
+        # through it instead of the original lists to avoid stale
+        # references and redundant destroy calls.
+        if spawn_manager is not None:
+
+            try:
+                spawn_manager.destroy_all()
+            except Exception as exc:
+                print(
+                    "[Cleanup] "
+                    f"spawn_manager: {exc}"
+                )
+
+        else:
+
+            try:
+                destroy_pedestrians(
+                    walkers,
+                    walker_controllers,
+                )
+            except Exception as exc:
+                print(
+                    "[Cleanup] "
+                    f"pedestrians: {exc}"
+                )
+
+            try:
+                destroy_traffic_vehicles(
+                    traffic_actors
+                )
+            except Exception as exc:
+                print(
+                    "[Cleanup] "
+                    f"traffic: {exc}"
+                )
 
         if ego is not None:
 
@@ -1221,8 +1516,28 @@ def main():
             # Load town
             # =================================================
 
+            xml_path = (
+                route_xml_path(
+                    town
+                )
+            )
+
+            if not os.path.isfile(
+                xml_path
+            ):
+                raise FileNotFoundError(
+                    f"Route XML not found: "
+                    f"{xml_path}"
+                )
+
+            carla_map_name = (
+                resolve_carla_map_name(
+                    xml_path
+                )
+            )
+
             world = client.load_world(
-                town
+                carla_map_name
             )
 
             original_settings = (
@@ -1247,6 +1562,30 @@ def main():
             )
 
             # =================================================
+            # Static environment cleanup
+            # =================================================
+            # Map-embedded static vehicles/pedestrians must be disabled
+            # before any ego/NPC/sensor is spawned.
+
+            static_removed = (
+                disable_static_traffic_objects(
+                    world
+                )
+            )
+
+            print(
+                f"[Environment] {town} "
+                f"static vehicles disabled: "
+                f"{static_removed['vehicles']}"
+            )
+
+            print(
+                f"[Environment] {town} "
+                f"static pedestrians disabled: "
+                f"{static_removed['pedestrians']}"
+            )
+
+            # =================================================
             # Traffic manager
             # =================================================
 
@@ -1260,20 +1599,8 @@ def main():
             # =================================================
             # Route IDs
             # =================================================
-
-            xml_path = (
-                route_xml_path(
-                    town
-                )
-            )
-
-            if not os.path.isfile(
-                xml_path
-            ):
-                raise FileNotFoundError(
-                    f"Route XML not found: "
-                    f"{xml_path}"
-                )
+            # xml_path was already resolved above (needed before
+            # client.load_world()).
 
             if args.routes is None:
 
@@ -1358,6 +1685,9 @@ def main():
                                 ),
                                 no_pedestrians=(
                                     args.no_pedestrians
+                                ),
+                                background_policy=(
+                                    args.background_policy
                                 ),
                             )
                         )

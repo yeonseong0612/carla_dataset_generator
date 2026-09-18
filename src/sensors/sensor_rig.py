@@ -9,6 +9,15 @@ from src.sensors.utils import spawn_sensor, destroy_sensors
 
 CAMERA_NAMES = ["rgb_left", "rgb_right", "depth", "optical_flow", "semantic"]
 
+# (sensor name, cfg.SENSOR attribute holding that radar's own config).
+# "radar" keeps its existing name/config (the front radar) for
+# compatibility with existing code and data.
+RADAR_RIG_SPECS = [
+    ("radar", "RADAR"),
+    ("radar_front_left", "RADAR_FRONT_LEFT"),
+    ("radar_front_right", "RADAR_FRONT_RIGHT"),
+]
+
 class SensorRig:
     def __init__(self, world, ego, cfg):
         self.world = world
@@ -33,7 +42,11 @@ class SensorRig:
             self._attach_sensor(name, camera_blueprints[name], camera_transforms[name])
 
         self._attach_sensor("lidar", create_lidar_blueprint(self.world, self.cfg), create_lidar_transform(self.cfg))
-        self._attach_sensor("radar", create_radar_blueprint(self.world, self.cfg), create_radar_transform(self.cfg))
+
+        for sensor_name, cfg_attr in RADAR_RIG_SPECS:
+            radar_cfg = getattr(self.cfg.SENSOR, cfg_attr)
+            self._attach_sensor(sensor_name, create_radar_blueprint(self.world, radar_cfg), create_radar_transform(radar_cfg))
+
         self._attach_sensor("gnss", create_gnss_blueprint(self.world, self.cfg), create_gnss_transform(self.cfg))
         self._attach_sensor("imu", create_imu_blueprint(self.world, self.cfg), create_imu_transform(self.cfg))
 

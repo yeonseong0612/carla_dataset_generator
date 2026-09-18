@@ -11,6 +11,7 @@ def create_lidar_blueprint(world, cfg):
     blueprint.set_attribute("range", str(cfg.SENSOR.LIDAR.RANGE))
     blueprint.set_attribute("points_per_second", str(cfg.SENSOR.LIDAR.POINTS_PER_SECOND))
     blueprint.set_attribute("rotation_frequency", str(cfg.SENSOR.LIDAR.ROTATION_FREQUENCY))
+    blueprint.set_attribute("horizontal_fov", str(cfg.SENSOR.LIDAR.HORIZONTAL_FOV))
     blueprint.set_attribute("upper_fov", str(cfg.SENSOR.LIDAR.UPPER_FOV))
     blueprint.set_attribute("lower_fov", str(cfg.SENSOR.LIDAR.LOWER_FOV))
     blueprint.set_attribute("sensor_tick", "0.0")

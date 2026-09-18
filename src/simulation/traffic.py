@@ -33,6 +33,25 @@ def get_vehicle_category(blueprint):
     return None
 
 
+def is_bus_blueprint(blueprint):
+    """
+    True if a CARLA vehicle blueprint's base_type is "bus". get_vehicle_
+    category() above deliberately keeps classifying bus as "vehicle"
+    (reading/annotation purposes still need that -- see
+    src/data/annotation.py get_category, unchanged) -- this is a
+    separate, narrower check used only where bus must be excluded from
+    SPAWN blueprint selection (GammaSpawnPolicy Phase 1,
+    CanonicalBackgroundTraffic buffer spawn). Not used by
+    get_traffic_blueprints() itself, so DynamicSpawnManager's pool is
+    unaffected by callers of this function.
+    """
+
+    if not blueprint.has_attribute("base_type"):
+        return False
+
+    return blueprint.get_attribute("base_type").as_str().lower() == "bus"
+
+
 def get_traffic_blueprints(world):
     blueprints = world.get_blueprint_library().filter("vehicle.*")
 
