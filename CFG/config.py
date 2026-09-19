@@ -17,14 +17,10 @@ cfg.SIMULATION.FPS = 20
 cfg.SIMULATION.FIXED_DELTA_SECONDS = 1.0 / cfg.SIMULATION.FPS
 
 cfg.PROJECT = EasyDict()
-# CFG/config.py lives at <project_root>/CFG/config.py, so the project
-# root is this file's grandparent. Resolved dynamically instead of
-# hard-coded so the project can be checked out to any path.
 cfg.PROJECT.ROOT = str(Path(__file__).resolve().parents[1])
 
 cfg.MAP = EasyDict()
 cfg.MAP.NAME = "Town01"
-# Kept in sync with the route XML files actually present under routes/.
 cfg.MAP.LIST = ["Town01", "Town02", "Town03", "Town04", "Town05", "Town07", "Town10", "Town12", "Town15"]
 
 cfg.RANDOM = EasyDict()
@@ -68,26 +64,11 @@ cfg.SENSOR.LIDAR.CHANNELS = 16
 
 cfg.SENSOR.LIDAR.RANGE = 130.0
 
-# rotation_frequency must complete >=1 full revolution per simulation
-# tick (rotation_frequency >= SIMULATION.FPS), otherwise the sensor's
-# per-tick azimuth sweep only covers a partial arc of the horizontal_fov
-# window (phase-dependent), showing up as a partial/half scan in a single
-# frame's saved point cloud instead of the full front-180 wedge.
 cfg.SENSOR.LIDAR.POINTS_PER_SECOND = 200000
 cfg.SENSOR.LIDAR.ROTATION_FREQUENCY = float(cfg.SIMULATION.FPS)
 
 cfg.SENSOR.LIDAR.HORIZONTAL_FOV = 180.0
 
-# LiDAR Vertical FOV Test: 64ch/200k's own point budget/channel count is
-# unchanged here -- only how the 64 channels are spread across elevation
-# is. Old (+2.0/-24.3, 26.3 deg span) biases almost all channels toward
-# the road surface a few meters out; new (+15/-15, 30 deg span, slightly
-# WIDER so per-channel spacing is actually a bit coarser: 30/63=0.476 deg
-# vs 26.3/63=0.417 deg) spends more of the 64 channels above the ground
-# plane where pedestrians/vehicles actually stand, trading a bit of
-# angular resolution for less road-only waste. Judged against real
-# object-level hit coverage, not the raw density numbers alone (see
-# outputs/lidar_fov_15_15_validation/).
 cfg.SENSOR.LIDAR.UPPER_FOV = 15.0
 cfg.SENSOR.LIDAR.LOWER_FOV = -15.0
 
@@ -111,11 +92,7 @@ cfg.SENSOR.RADAR = EasyDict()
 cfg.SENSOR.RADAR.HORIZONTAL_FOV = 60.0
 cfg.SENSOR.RADAR.VERTICAL_FOV = 20.0
 cfg.SENSOR.RADAR.RANGE =120.0
-# Measured on Town10HD (60 frames, static-removed, ~15 nearby actors/frame):
-# 150000 PPS -> ~6866 returns/frame mean (~4.6% return ratio; CARLA ray
-# count != actual return count, so this is calibrated from the actual
-# measurement, not the raw PPS value). Lowered so 3-radar merged mean
-# lands near the 8k-12k preferred band instead of just above it (~12.6k).
+
 cfg.SENSOR.RADAR.POINTS_PER_SECOND = 100000
 
 cfg.SENSOR.RADAR.X = 2.3
@@ -128,11 +105,6 @@ cfg.SENSOR.RADAR.YAW = 0.0
 
 cfg.SENSOR.RADAR.FPS = 20
 
-# Front-corner radars. cfg.SENSOR.RADAR above stays the front-facing radar
-# (kept as-is / unrenamed for compatibility with existing code + data).
-# Positions/yaw verified against the actual vehicle.tesla.model3 bounding
-# box (half-width ~1.08m) and CARLA's yaw convention (yaw>0 rotates
-# forward toward +Y/right, confirmed via carla.Rotation.get_forward_vector()).
 cfg.SENSOR.RADAR_FRONT_LEFT = EasyDict()
 cfg.SENSOR.RADAR_FRONT_LEFT.HORIZONTAL_FOV = 90.0
 cfg.SENSOR.RADAR_FRONT_LEFT.VERTICAL_FOV = 20.0
@@ -248,7 +220,6 @@ cfg.SPAWN = EasyDict()
 
 cfg.SPAWN.SEED = 42
 
-# s ~ Gamma(shape, scale); mean = shape*scale = 30m, mode = (shape-1)*scale = 15m
 cfg.SPAWN.GAMMA_SHAPE = 2.0
 cfg.SPAWN.GAMMA_SCALE = 15.0
 
@@ -262,10 +233,6 @@ cfg.SPAWN.N_PEDESTRIANS = 8
 
 cfg.SPAWN.MIN_EGO_SPACING = 10.0
 
-# Lane-aware spacing (Phase 1 iteration 2): the 8m rule only applies
-# longitudinally within the SAME driving lane (vehicle/motorcycle/
-# bicycle share this pool); a candidate on a different lane only needs
-# to clear a small anti-overlap distance from other vehicle-like actors.
 cfg.SPAWN.MIN_VEHICLE_SPACING = 8.0
 cfg.SPAWN.MIN_CROSS_LANE_SPACING = 3.0
 
@@ -289,22 +256,12 @@ cfg.SPAWN.FORWARD_CLEANUP_DISTANCE = 150.0
 ### Spawn Policy Phase 2.5 -- dynamic spawn stability fixes
 #################################################################
 
-# A managed actor that fails route projection for this many consecutive
-# updates (>= MAX_PROJECTION_FAILURE_UPDATES) is despawned -- diagnosed
-# in Phase 2.5: without this, a projection-failed actor has no relative_s
-# and therefore never reaches the normal despawn check, accumulating in
-# the registry indefinitely (one actor failed 25 updates straight).
 cfg.SPAWN.MAX_PROJECTION_FAILURE_UPDATES = 10
 
-# Same threshold used for "is this actor still on the route corridor",
-# now also the trigger for the escalating search-window recovery in
-# DynamicSpawnManager (normal -> expanded -> full-route fallback).
+
 cfg.SPAWN.MAX_ROUTE_PROJECTION_DISTANCE = 20.0
 
-# Diagnosed in Phase 2.5: a same-lane vehicle spawned 10-20m ahead of ego
-# reads to BasicAgent as a close lead vehicle and repeatedly stalls ego.
-# Corner/adjacent-lane spawns are unaffected -- only same road_id AND
-# same lane_id as ego, closer than this, is rejected.
+
 cfg.SPAWN.MIN_SAME_LANE_EGO_SPAWN_DISTANCE = 30.0
 
 #################################################################
