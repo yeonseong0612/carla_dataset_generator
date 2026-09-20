@@ -1,7 +1,3 @@
-import random
-import carla
-
-
 PASSENGER_CAR_FALLBACK = {
     "vehicle.bmw.grandtourer",
     "vehicle.mini.cooper_s",
@@ -34,18 +30,7 @@ def get_vehicle_category(blueprint):
 
 
 def is_bus_blueprint(blueprint):
-    """
-    True if a CARLA vehicle blueprint's base_type is "bus". get_vehicle_
-    category() above deliberately keeps classifying bus as "vehicle"
-    (reading/annotation purposes still need that -- see
-    src/data/annotation.py get_category, unchanged) -- this is a
-    separate, narrower check used only where bus must be excluded from
-    SPAWN blueprint selection (GammaSpawnPolicy Phase 1,
-    CanonicalBackgroundTraffic buffer spawn). Not used by
-    get_traffic_blueprints() itself, so DynamicSpawnManager's pool is
-    unaffected by callers of this function.
-    """
-
+    
     if not blueprint.has_attribute("base_type"):
         return False
 
@@ -68,14 +53,6 @@ def get_traffic_blueprints(world):
             pools[category].append(blueprint)
 
     return pools
-
-
-def filter_spawn_points(spawn_points, ego_location, min_distance):
-    return [
-        transform
-        for transform in spawn_points
-        if transform.location.distance(ego_location) >= min_distance
-    ]
 
 
 def prepare_blueprint(blueprint, rng):
@@ -103,73 +80,6 @@ def configure_actor_traffic_manager(actor, traffic_manager, cfg):
     traffic_manager.ignore_signs_percentage(actor, cfg.TRAFFIC.IGNORE_SIGNS_PERCENTAGE)
     traffic_manager.ignore_vehicles_percentage(actor, cfg.TRAFFIC.IGNORE_VEHICLES_PERCENTAGE)
     traffic_manager.ignore_walkers_percentage(actor, cfg.TRAFFIC.IGNORE_WALKERS_PERCENTAGE)
-
-
-def spawn_from_pool(world, traffic_manager, spawn_points, blueprints, count, cfg, rng):
-    actors = []
-
-    if not blueprints or count <= 0:
-        return actors
-
-    while spawn_points and len(actors) < count:
-        transform = spawn_points.pop()
-        blueprint = rng.choice(blueprints)
-        blueprint = prepare_blueprint(blueprint, rng)
-
-        actor = world.try_spawn_actor(blueprint, transform)
-
-        if actor is None:
-            continue
-
-        configure_actor_traffic_manager(actor, traffic_manager, cfg)
-        actors.append(actor)
-
-    return actors
-
-
-def spawn_traffic_vehicles(world, traffic_manager, ego, cfg):
-    rng = random.Random(cfg.TRAFFIC.SEED)
-    pools = get_traffic_blueprints(world)
-
-    spawn_points = world.get_map().get_spawn_points()
-    spawn_points = filter_spawn_points(spawn_points, ego.get_location(), cfg.TRAFFIC.MIN_DISTANCE_TO_EGO)
-    rng.shuffle(spawn_points)
-
-    vehicles = spawn_from_pool(
-        world,
-        traffic_manager,
-        spawn_points,
-        pools["vehicle"],
-        cfg.TRAFFIC.NUM_VEHICLES,
-        cfg,
-        rng
-    )
-
-    cyclists = spawn_from_pool(
-        world,
-        traffic_manager,
-        spawn_points,
-        pools["cyclist"],
-        cfg.TRAFFIC.NUM_CYCLISTS,
-        cfg,
-        rng
-    )
-
-    motorcyclists = spawn_from_pool(
-        world,
-        traffic_manager,
-        spawn_points,
-        pools["motorcyclist"],
-        cfg.TRAFFIC.NUM_MOTORCYCLISTS,
-        cfg,
-        rng
-    )
-
-    return {
-        "vehicle": vehicles,
-        "cyclist": cyclists,
-        "motorcyclist": motorcyclists
-    }
 
 
 def flatten_traffic_actors(traffic_actors):

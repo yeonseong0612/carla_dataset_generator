@@ -3,8 +3,6 @@ import queue
 from src.sensors.camera import create_camera_rig_blueprints, create_camera_rig_transforms
 from src.sensors.lidar import create_lidar_blueprint, create_lidar_transform
 from src.sensors.radar import create_radar_blueprint, create_radar_transform
-from src.sensors.gnss import create_gnss_blueprint, create_gnss_transform
-from src.sensors.imu import create_imu_blueprint, create_imu_transform
 from src.sensors.utils import spawn_sensor, destroy_sensors
 
 CAMERA_NAMES = ["rgb_left", "rgb_right", "depth", "optical_flow", "semantic"]
@@ -18,6 +16,7 @@ RADAR_RIG_SPECS = [
     ("radar_front_right", "RADAR_FRONT_RIGHT"),
 ]
 
+
 class SensorRig:
     def __init__(self, world, ego, cfg):
         self.world = world
@@ -25,7 +24,7 @@ class SensorRig:
         self.cfg = cfg
         self.sensors = {}
         self.queues = {}
-    
+
     def _attach_sensor(self, name, blueprint, transform):
         sensor = spawn_sensor(self.world, self.ego, blueprint, transform)
         sensor_queue = queue.Queue()
@@ -46,9 +45,6 @@ class SensorRig:
         for sensor_name, cfg_attr in RADAR_RIG_SPECS:
             radar_cfg = getattr(self.cfg.SENSOR, cfg_attr)
             self._attach_sensor(sensor_name, create_radar_blueprint(self.world, radar_cfg), create_radar_transform(radar_cfg))
-
-        self._attach_sensor("gnss", create_gnss_blueprint(self.world, self.cfg), create_gnss_transform(self.cfg))
-        self._attach_sensor("imu", create_imu_blueprint(self.world, self.cfg), create_imu_transform(self.cfg))
 
         return self
 

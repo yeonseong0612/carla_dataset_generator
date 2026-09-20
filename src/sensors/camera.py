@@ -1,11 +1,12 @@
-import  carla
+import carla
 
 CAMERA_TYPES = {
     "rgb": "sensor.camera.rgb",
     "depth": "sensor.camera.depth",
     "optical_flow": "sensor.camera.optical_flow",
-    "semantic" : "sensor.camera.semantic_segmentation"
+    "semantic": "sensor.camera.semantic_segmentation"
 }
+
 
 def create_camera_blueprint(world, sensor_type, width, height, fov):
     if sensor_type not in CAMERA_TYPES:
@@ -24,12 +25,14 @@ def create_camera_blueprint(world, sensor_type, width, height, fov):
 
     return blueprint
 
+
 def create_camera_transform(x, y, z, roll=0.0, pitch=0.0, yaw=0.0):
     transform = carla.Transform(
         carla.Location(x=x, y=y, z=z),
         carla.Rotation(roll=roll, pitch=pitch, yaw=yaw)
     )
     return transform
+
 
 def create_left_camera_transform(cfg):
     return create_camera_transform(
@@ -51,6 +54,7 @@ def create_right_camera_transform(cfg):
         cfg.SENSOR.CAMERA.PITCH,
         cfg.SENSOR.CAMERA.YAW
     )
+
 
 def create_rgb_blueprint(world, cfg):
     return create_camera_blueprint(world, "rgb", cfg.SENSOR.CAMERA.WIDTH, cfg.SENSOR.CAMERA.HEIGHT, cfg.SENSOR.CAMERA.FOV)

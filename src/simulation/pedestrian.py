@@ -1,7 +1,6 @@
 import random
 import carla
 
-
 def get_walker_blueprints(world):
     return list(world.get_blueprint_library().filter("walker.pedestrian.*"))
 

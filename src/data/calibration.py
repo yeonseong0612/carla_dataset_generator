@@ -385,8 +385,6 @@ def build_calibration(
             "optical_flow": actor,
             "lidar": actor,
             "radar": actor,
-            "gnss": actor,
-            "imu": actor,
         }
 
     left_camera_name:

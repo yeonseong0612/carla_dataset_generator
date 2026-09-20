@@ -1,30 +1,14 @@
 """
-environment.py
+Disable map-embedded static traffic objects before spawning ego/NPCs.
 
-Removes map-embedded static traffic participants (parked cars, static
-pedestrian-like props, ...) from a freshly loaded CARLA world, before any
-ego/NPC/sensor is spawned. This keeps them from showing up as spurious
-clutter in RGB/LiDAR/Radar returns and in ground-truth annotation, while
-leaving environment geometry (buildings, roads, traffic lights/signs,
-poles, vegetation, walls, guard rails, ...) untouched.
+CARLA maps may contain baked-in parked vehicles and pedestrian-like
+environment objects. These are EnvironmentObject instances, not spawned
+vehicle/walker actors, so they are not controlled by the dataset traffic
+pipeline.
 
-CARLA exposes these as carla.EnvironmentObject instances via
-world.get_environment_objects(label), distinct from spawned
-vehicle.*/walker.* actors. world.enable_environment_objects(ids, False)
-hides them and removes their collision. This never touches any actor
-(ego, traffic-manager NPCs, or pedestrians we spawn ourselves) -- only
-objects baked into the map itself.
-
-Label verification
--------------------
-carla.CityObjectLabel does NOT expose a single "Vehicles" label in the
-CARLA build this project targets -- only per-type vehicle labels. Static
-pedestrian-shaped props are exposed via CityObjectLabel.Pedestrians;
-CityObjectLabel.Rider (a static person posed on a bike/motorcycle) is
-person-like rather than vehicle-like, so it is grouped with pedestrians
-instead. Re-verify with:
-
-    [n for n in dir(carla.CityObjectLabel) if not n.startswith("_")]
+They are disabled to avoid uncontrolled clutter in RGB/LiDAR/Radar and
+ground-truth annotations. Buildings, roads, traffic lights, vegetation,
+and other environment geometry are left untouched.
 """
 
 import carla
@@ -45,6 +29,7 @@ STATIC_PEDESTRIAN_LABELS = (
 
 
 def get_static_object_ids(world, labels):
+
     ids = []
 
     for label in labels:
@@ -54,18 +39,6 @@ def get_static_object_ids(world, labels):
 
 
 def disable_static_traffic_objects(world):
-    """
-    Disable every map-embedded static vehicle and pedestrian-like
-    environment object in `world`.
-
-    Call this right after the map is loaded and before spawning ego,
-    NPCs, or sensors.
-
-    Returns
-    -------
-    dict with "vehicles" and "pedestrians" keys: the number of static
-    objects disabled in each category.
-    """
 
     vehicle_ids = get_static_object_ids(world, STATIC_VEHICLE_LABELS)
     pedestrian_ids = get_static_object_ids(world, STATIC_PEDESTRIAN_LABELS)
@@ -83,11 +56,7 @@ def disable_static_traffic_objects(world):
 
 
 def enumerate_static_traffic_objects(world):
-    """
-    Debug/validation helper: per-label static object counts without
-    disabling anything (used to check what a map actually contains).
-    """
-
+    
     counts = {}
 
     for label in STATIC_VEHICLE_LABELS + STATIC_PEDESTRIAN_LABELS:

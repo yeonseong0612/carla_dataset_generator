@@ -27,8 +27,6 @@ cfg.RANDOM = EasyDict()
 cfg.RANDOM.SEED = 42
 
 
-# Sensor configuration
-
 cfg.SENSOR = EasyDict()
 
 #################################################################
@@ -137,50 +135,7 @@ cfg.SENSOR.RADAR_FRONT_RIGHT.YAW = 45.0
 
 cfg.SENSOR.RADAR_FRONT_RIGHT.FPS = 20
 
-#################################################################
-### GNSS
-#################################################################
 
-cfg.SENSOR.GNSS = EasyDict()
-
-cfg.SENSOR.GNSS.X = 0.0
-cfg.SENSOR.GNSS.Y = 0.0
-cfg.SENSOR.GNSS.Z = 2.0
-
-cfg.SENSOR.GNSS.NOISE_LAT_STDDEV = 0.0
-cfg.SENSOR.GNSS.NOISE_LON_STDDEV = 0.0
-cfg.SENSOR.GNSS.NOISE_ALT_STDDEV = 0.0
-
-cfg.SENSOR.GNSS.NOISE_LAT_BIAS = 0.0
-cfg.SENSOR.GNSS.NOISE_LON_BIAS = 0.0
-cfg.SENSOR.GNSS.NOISE_ALT_BIAS = 0.0
-
-cfg.SENSOR.GNSS.NOISE_SEED = 42
-
-
-#################################################################
-### IMU
-#################################################################
-
-cfg.SENSOR.IMU = EasyDict()
-
-cfg.SENSOR.IMU.X = 0.0
-cfg.SENSOR.IMU.Y = 0.0
-cfg.SENSOR.IMU.Z = 1.0
-
-cfg.SENSOR.IMU.NOISE_ACCEL_STDDEV_X = 0.0
-cfg.SENSOR.IMU.NOISE_ACCEL_STDDEV_Y = 0.0
-cfg.SENSOR.IMU.NOISE_ACCEL_STDDEV_Z = 0.0
-
-cfg.SENSOR.IMU.NOISE_GYRO_STDDEV_X = 0.0
-cfg.SENSOR.IMU.NOISE_GYRO_STDDEV_Y = 0.0
-cfg.SENSOR.IMU.NOISE_GYRO_STDDEV_Z = 0.0
-
-cfg.SENSOR.IMU.NOISE_GYRO_BIAS_X = 0.0
-cfg.SENSOR.IMU.NOISE_GYRO_BIAS_Y = 0.0
-cfg.SENSOR.IMU.NOISE_GYRO_BIAS_Z = 0.0
-
-cfg.SENSOR.IMU.NOISE_SEED = 42
 
 #################################################################
 ### Traffic

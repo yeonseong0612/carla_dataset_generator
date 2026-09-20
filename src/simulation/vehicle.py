@@ -1,5 +1,3 @@
-import carla
-
 def get_vehicle_blueprint(world, blueprint_id):
     blueprint_library = world.get_blueprint_library()
     blueprint = blueprint_library.find(blueprint_id)

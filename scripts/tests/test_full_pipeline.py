@@ -58,7 +58,6 @@ from src.simulation.vehicle import destroy_vehicle
 
 from src.simulation.traffic import (
     configure_traffic_manager,
-    spawn_traffic_vehicles,
     destroy_traffic_vehicles,
 )
 
@@ -364,18 +363,6 @@ def validate_sequence_files(
             "pose",
             "poses.csv",
         ),
-
-        os.path.join(
-            sequence_root,
-            "navigation",
-            "gnss.csv",
-        ),
-
-        os.path.join(
-            sequence_root,
-            "navigation",
-            "imu.csv",
-        ),
     ]
 
     for path in required_files:
@@ -404,20 +391,6 @@ def validate_sequence_files(
                 sequence_root,
                 "pose",
                 "poses.csv",
-            ),
-
-        "gnss.csv":
-            os.path.join(
-                sequence_root,
-                "navigation",
-                "gnss.csv",
-            ),
-
-        "imu.csv":
-            os.path.join(
-                sequence_root,
-                "navigation",
-                "imu.csv",
             ),
     }
 
@@ -681,25 +654,9 @@ def main():
         # ====================================================
         # 9. Traffic
         # ====================================================
-
-        traffic_actors = (
-            spawn_traffic_vehicles(
-                world,
-                traffic_manager,
-                ego,
-                cfg,
-            )
-        )
-
-        print(
-            "[Traffic] "
-            f"Vehicles="
-            f"{len(traffic_actors.get('vehicle', []))}, "
-            f"Cyclists="
-            f"{len(traffic_actors.get('cyclist', []))}, "
-            f"Motorcyclists="
-            f"{len(traffic_actors.get('motorcyclist', []))}"
-        )
+        # Legacy spawn_traffic_vehicles() removed; background traffic is
+        # spawned by GammaSpawnPolicy/CanonicalBackgroundTraffic in
+        # collect_dataset.py, not in this test. traffic_actors stays {}.
 
         # ====================================================
         # 10. Pedestrians

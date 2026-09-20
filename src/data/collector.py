@@ -8,7 +8,6 @@ Responsibilities
 1. Wait for all sensors to produce the requested CARLA frame.
 2. Convert raw CARLA sensor data to NumPy arrays where necessary.
 3. Save synchronized sensor data to disk.
-4. Store GNSS / IMU measurements in CSV files.
 
 Expected sequence structure
 ---------------------------
@@ -21,10 +20,7 @@ sequence_root/
 ├─ lidar/
 ├─ radar/
 ├─ radar_front_left/
-├─ radar_front_right/
-└─ navigation/
-   ├─ gnss.csv
-   └─ imu.csv
+└─ radar_front_right/
 
 The sequence_root itself should already represent one unique
 Town / Route / Weather sequence.
@@ -33,7 +29,6 @@ Example:
 dataset/Town01/route_00/day_clear/
 """
 
-import csv
 import os
 import queue
 import time
@@ -381,8 +376,6 @@ class Collector:
             radar
             radar_front_left
             radar_front_right
-            gnss
-            imu
 
     sequence_root:
         Output directory representing one complete sequence.
@@ -411,10 +404,7 @@ class Collector:
         "optical_flow",
         "semantic",
         "lidar",
-    ) + RADAR_SENSORS + (
-        "gnss",
-        "imu",
-    )
+    ) + RADAR_SENSORS
 
     def __init__(
         self,
@@ -445,12 +435,6 @@ class Collector:
 
         self.dirs = {}
 
-        self.gnss_file = None
-        self.imu_file = None
-
-        self.gnss_writer = None
-        self.imu_writer = None
-
         self._validate_rig()
         self._prepare_output()
 
@@ -479,7 +463,7 @@ class Collector:
 
     def _prepare_output(self):
         """
-        Create output directories and navigation CSV files.
+        Create output directories.
 
         sequence_root already represents one weather-specific
         sequence, therefore condition-specific subdirectories
@@ -517,86 +501,6 @@ class Collector:
             )
 
             self.dirs[name] = path
-
-        # ----------------------------------------------------
-        # Navigation
-        # ----------------------------------------------------
-
-        navigation_dir = os.path.join(
-            self.sequence_root,
-            "navigation",
-        )
-
-        os.makedirs(
-            navigation_dir,
-            exist_ok=True,
-        )
-
-        self.dirs["navigation"] = (
-            navigation_dir
-        )
-
-        # ----------------------------------------------------
-        # GNSS
-        # ----------------------------------------------------
-
-        self.gnss_file = open(
-            os.path.join(
-                navigation_dir,
-                "gnss.csv",
-            ),
-            "w",
-            newline="",
-            encoding="utf-8",
-        )
-
-        self.gnss_writer = csv.writer(
-            self.gnss_file
-        )
-
-        self.gnss_writer.writerow(
-            [
-                "frame_id",
-                "carla_frame",
-                "timestamp",
-                "latitude",
-                "longitude",
-                "altitude",
-            ]
-        )
-
-        # ----------------------------------------------------
-        # IMU
-        # ----------------------------------------------------
-
-        self.imu_file = open(
-            os.path.join(
-                navigation_dir,
-                "imu.csv",
-            ),
-            "w",
-            newline="",
-            encoding="utf-8",
-        )
-
-        self.imu_writer = csv.writer(
-            self.imu_file
-        )
-
-        self.imu_writer.writerow(
-            [
-                "frame_id",
-                "carla_frame",
-                "timestamp",
-                "accel_x",
-                "accel_y",
-                "accel_z",
-                "gyro_x",
-                "gyro_y",
-                "gyro_z",
-                "compass",
-            ]
-        )
 
 
     # ========================================================
@@ -779,47 +683,6 @@ class Collector:
             )
 
         # ----------------------------------------------------
-        # GNSS
-        # ----------------------------------------------------
-
-        gnss = packet["gnss"]
-
-        self.gnss_writer.writerow(
-            [
-                local_frame_id,
-                gnss.frame,
-                gnss.timestamp,
-                gnss.latitude,
-                gnss.longitude,
-                gnss.altitude,
-            ]
-        )
-
-        # ----------------------------------------------------
-        # IMU
-        # ----------------------------------------------------
-
-        imu = packet["imu"]
-
-        self.imu_writer.writerow(
-            [
-                local_frame_id,
-                imu.frame,
-                imu.timestamp,
-
-                imu.accelerometer.x,
-                imu.accelerometer.y,
-                imu.accelerometer.z,
-
-                imu.gyroscope.x,
-                imu.gyroscope.y,
-                imu.gyroscope.z,
-
-                imu.compass,
-            ]
-        )
-
-        # ----------------------------------------------------
         # Result summary
         # ----------------------------------------------------
 
@@ -903,39 +766,19 @@ class Collector:
     def flush(self):
         """
         Flush CSV streams to disk.
+
+        No-op: Collector currently writes only image/array frames,
+        which are saved synchronously in save_frame(). Kept for
+        interface symmetry with MetadataWriter.
         """
-
-        if self.gnss_file is not None:
-            self.gnss_file.flush()
-
-        if self.imu_file is not None:
-            self.imu_file.flush()
-
 
     def close(self):
         """
         Flush and close open resources.
+
+        No-op: Collector currently holds no open file handles.
+        Kept for interface symmetry with MetadataWriter.
         """
-
-        if self.gnss_file is not None:
-
-            try:
-                self.gnss_file.flush()
-            finally:
-                self.gnss_file.close()
-
-            self.gnss_file = None
-            self.gnss_writer = None
-
-        if self.imu_file is not None:
-
-            try:
-                self.imu_file.flush()
-            finally:
-                self.imu_file.close()
-
-            self.imu_file = None
-            self.imu_writer = None
 
 
     # ========================================================

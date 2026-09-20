@@ -281,15 +281,6 @@ def pose_navigation_schema(sequence_dir):
             first_row = next(reader, None)
         result["pose/poses.csv"] = {"columns": header, "first_row_example": first_row}
 
-    for name in ("gnss.csv", "imu.csv"):
-        p = os.path.join(sequence_dir, "navigation", name)
-        if os.path.isfile(p):
-            with open(p, newline="", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                header = next(reader)
-                first_row = next(reader, None)
-            result[f"navigation/{name}"] = {"columns": header, "first_row_example": first_row}
-
     ego_state_path = os.path.join(sequence_dir, "ego_state.csv")
     if os.path.isfile(ego_state_path):
         with open(ego_state_path, newline="", encoding="utf-8") as f:

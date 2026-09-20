@@ -1,53 +1,3 @@
-"""
-spawn_policy.py
-
-Phase 1 initial actor placement: route-relative Gamma-distributed
-longitudinal spawn distance, sampled once at route start (no dynamic
-replenishment yet).
-
-Pipeline (per actor):
-
-    Gamma(shape, scale) sample s
-        -> reject/resample if s outside [MIN_DISTANCE, MAX_DISTANCE]
-        -> route arc-length s ahead of the route start -> reference waypoint
-        -> actor-type valid surface
-               vehicle / motorcycle / bicycle -> Driving lane
-               pedestrian                     -> Sidewalk
-        -> spacing check vs. ego and already-placed actors
-        -> spawn, or give up after cfg.SPAWN.MAX_ATTEMPTS and log a warning
-
-Vehicle/motorcycle/bicycle share one candidate pool and are spawned in a
-deterministically shuffled (seed-based) interleaved order, rather than
-category-by-category, so a large vehicle count can't claim every
-same-lane slot before motorcycles/bicycles get a turn. Their spacing
-check is lane-aware: the 8m rule is longitudinal-only within the SAME
-(road_id, lane_id); a candidate on a different lane only needs to clear
-a small anti-overlap margin, so parallel lanes don't need to be nearly
-empty just to satisfy a same-lane rule that doesn't apply to them.
-
-Placing fewer actors than requested is the expected, correct outcome
-when valid positions run out along this route -- forcing a placement
-that fails validity/spacing checks just to hit the requested count is
-never acceptable. A short/narrow route, or requesting a category with
-no reachable Driving lane/Sidewalk, legitimately yields 0 spawned.
-
-Never Cartesian-random (x/y draw): every candidate location is derived
-from a route waypoint via CARLA's own lane graph
-(waypoint.get_left_lane()/get_right_lane(), or
-carla_map.get_waypoint(..., lane_type=Sidewalk)), so actors stay on the
-road/sidewalk surface even through curves.
-
-Phase 2 (DynamicSpawnManager, bottom of this file) keeps that same
-front-of-ego Gamma field alive while ego drives: it re-derives every
-managed actor's route-relative position every update (never trusts the
-spawn-time sampled_s once actors start moving under TrafficManager/AI
-control), despawns actors that fall far enough behind ego, and replenishes
-only the specific category x distance-bin combinations that are
-under-target -- reusing the exact same lane/sidewalk/spacing/blueprint
-machinery as the Phase 1 initial spawn above, just with a bin-constrained
-Gamma draw instead of an unconstrained one.
-"""
-
 import math
 
 import carla
@@ -55,24 +5,11 @@ import numpy as np
 
 from src.navigation.route import distance_2d, find_nearest_route_index
 from src.simulation.pedestrian import get_walker_blueprints
-from src.simulation.traffic import (
-    configure_actor_traffic_manager,
-    get_traffic_blueprints,
-    prepare_blueprint,
-    is_bus_blueprint,
-)
+from src.simulation.traffic import configure_actor_traffic_manager, get_traffic_blueprints, prepare_blueprint, is_bus_blueprint
 
-LANE_SELECTION_WEIGHTS = {
-    "reference": 0.50,
-    "left": 0.25,
-    "right": 0.25,
-}
 
-# How far a sidewalk waypoint returned by carla_map.get_waypoint(...,
-# lane_type=Sidewalk) may be from the route's reference location before
-# it's treated as "no sidewalk near here" rather than a real match
-# (CARLA's search has no explicit radius cap, so a bad/no match can come
-# back as some arbitrarily distant sidewalk).
+LANE_SELECTION_WEIGHTS = {"reference": 0.50, "left": 0.25, "right": 0.25}
+
 MAX_SIDEWALK_OFFSET_M = 15.0
 
 SPAWN_HEIGHT_OFFSET_M = 0.5
@@ -80,17 +17,7 @@ SPAWN_HEIGHT_OFFSET_M = 0.5
 VEHICLE_LIKE_CATEGORIES = ("vehicle", "motorcyclist", "cyclist")
 
 
-# ============================================================
-# Route-relative Gamma sampling
-# ============================================================
-
 def sample_route_distance(rng, cfg, max_rejections=200):
-    """
-    s ~ Gamma(shape, scale), truncated to [MIN_DISTANCE, MAX_DISTANCE]
-    via rejection sampling (discard-and-resample, not clipping, so the
-    accepted distribution stays a genuine truncated Gamma rather than
-    piling up at the bounds).
-    """
 
     for _ in range(max_rejections):
         s = float(rng.gamma(cfg.SPAWN.GAMMA_SHAPE, cfg.SPAWN.GAMMA_SCALE))
@@ -102,15 +29,6 @@ def sample_route_distance(rng, cfg, max_rejections=200):
 
 
 def reference_waypoint_at_distance(dense_route, s):
-    """
-    Walk dense_route (list of (carla.Waypoint, RoadOption), sampled at
-    ~fixed arc-length spacing by GlobalRoutePlanner) forward from its
-    start, accumulating 2D distance between consecutive waypoints, and
-    return the waypoint at/just past route-relative distance s.
-
-    Returns (waypoint, actual_accumulated_distance), or (None, None) if
-    dense_route is empty or s is beyond the route's length.
-    """
 
     if not dense_route:
         return None, None
@@ -128,18 +46,7 @@ def reference_waypoint_at_distance(dense_route, s):
 
     return None, None
 
-
-# ============================================================
-# Actor-type valid surface
-# ============================================================
-
 def driving_lane_candidates(reference_waypoint):
-    """
-    (name, waypoint) pairs for the reference lane plus its left/right
-    adjacent lanes, filtered to lanes that exist and are
-    carla.LaneType.Driving. Opposite-direction and non-adjacent lanes
-    are out of scope for Phase 1.
-    """
 
     candidates = []
 
@@ -191,14 +98,6 @@ def sidewalk_waypoint_near(carla_map, location, max_offset=MAX_SIDEWALK_OFFSET_M
 
 
 def pedestrian_local_destination(carla_map, location, walk_distance=10.0):
-    """
-    A nearby walk destination along the same sidewalk, so a managed
-    pedestrian's AI controller keeps it near the route corridor instead
-    of wandering toward a random point anywhere on the map's nav mesh
-    (which would very quickly break its route-relative tracking).
-    Returns None if no nearby sidewalk-following point is available, so
-    the caller can fall back to world.get_random_location_from_navigation().
-    """
 
     waypoint = carla_map.get_waypoint(location, project_to_road=True, lane_type=carla.LaneType.Sidewalk)
 
@@ -211,26 +110,11 @@ def pedestrian_local_destination(carla_map, location, walk_distance=10.0):
 
     return None
 
-
-# ============================================================
-# Spacing
-# ============================================================
-
 def far_enough(location, other_locations, min_distance):
     return all(location.distance(other) >= min_distance for other in other_locations)
 
 
 def vehicle_spacing_ok(location, road_id, lane_id, s, placed_vehicle_records, same_lane_spacing, cross_lane_spacing):
-    """
-    Lane-aware spacing for vehicle/motorcycle/bicycle candidates:
-      - same (road_id, lane_id) as an already-placed vehicle-like actor:
-        require >= same_lane_spacing apart *longitudinally* (route
-        distance s), since two actors in the same lane only ever
-        conflict along the lane's own direction, not sideways.
-      - different lane: no blanket spacing requirement -- just clear a
-        small cross_lane_spacing Euclidean margin so spawns don't land
-        inside another vehicle's bounding box at a lane boundary.
-    """
 
     for other in placed_vehicle_records:
         if other["road_id"] == road_id and other["lane_id"] == lane_id:
@@ -242,17 +126,7 @@ def vehicle_spacing_ok(location, road_id, lane_id, s, placed_vehicle_records, sa
 
     return True
 
-
-# ============================================================
-# Spawn manager
-# ============================================================
-
 class GammaSpawnPolicy:
-    """
-    Runs the Gamma route-relative placement once (Phase 1: initial spawn
-    only, no replenishment) and holds every accepted actor location for
-    spacing checks against later candidates.
-    """
 
     def __init__(self, world, ego, dense_route, traffic_manager, cfg):
         self.world = world
@@ -267,37 +141,19 @@ class GammaSpawnPolicy:
         self.ego_location = ego.get_location()
 
         self.vehicle_pools = get_traffic_blueprints(world)
-        # Bus removed from spawn eligibility entirely (task: "Remove Bus
-        # Completely from Canonical Dataset Traffic") -- filtered once
-        # here, at this policy's own local pool, so every subsequent
-        # self.rng.choice(self.vehicle_pools["vehicle"]) draw has zero
-        # bus probability by construction. get_traffic_blueprints() /
-        # get_vehicle_category() themselves are unchanged (still
-        # classify bus as "vehicle" for reading/annotation purposes) and
-        # DynamicSpawnManager builds its own separate pool from the same
-        # unmodified function, so it is unaffected by this filter.
+
         self.vehicle_pools["vehicle"] = [
             blueprint for blueprint in self.vehicle_pools["vehicle"] if not is_bus_blueprint(blueprint)
         ]
         self.walker_blueprints = get_walker_blueprints(world)
         self.walker_controller_bp = world.get_blueprint_library().find("controller.ai.walker")
 
-        # Vehicle-like actors are tracked with lane identity (for
-        # lane-aware spacing); pedestrians are tracked separately since
-        # they live on a different surface and use their own spacing.
         self.placed_vehicle_records = []
         self.placed_pedestrian_locations = []
 
         self.spawn_records = []
-        # Every accepted Gamma draw used as an attempt (whether or not
-        # that attempt's actor was ultimately placed) -- lets the QA
-        # visualization compare the raw truncated-Gamma shape against
-        # what actually got spawned.
-        self.proposed_s = []
 
-    # --------------------------------------------------------
-    # Vehicle / motorcycle / bicycle
-    # --------------------------------------------------------
+        self.proposed_s = []
 
     def _try_spawn_vehicle_like(self, category):
         blueprint_pool = self.vehicle_pools.get(category, [])
@@ -365,9 +221,6 @@ class GammaSpawnPolicy:
 
         return None
 
-    # --------------------------------------------------------
-    # Pedestrian
-    # --------------------------------------------------------
 
     def _try_spawn_pedestrian(self):
         if not self.walker_blueprints:
@@ -442,9 +295,6 @@ class GammaSpawnPolicy:
 
         return None
 
-    # --------------------------------------------------------
-    # Bookkeeping
-    # --------------------------------------------------------
 
     def _record(self, category, actor_id, sampled_s, actual_distance, waypoint, location):
         record = {
@@ -467,10 +317,6 @@ class GammaSpawnPolicy:
             f"road={waypoint.road_id} lane={waypoint.lane_id}"
         )
 
-    # --------------------------------------------------------
-    # Run
-    # --------------------------------------------------------
-
     def run(self, n_vehicles=None, n_motorcycles=None, n_bicycles=None, n_pedestrians=None):
         """
         Spawn once. Any of the n_* counts default to cfg.SPAWN.N_*, and
@@ -488,10 +334,6 @@ class GammaSpawnPolicy:
         traffic_actors = {"vehicle": [], "cyclist": [], "motorcyclist": []}
         walkers, walker_controllers, walker_speeds = [], [], []
 
-        # Category interleaving: spawn vehicle/motorcycle/bicycle in a
-        # deterministically shuffled order instead of category-by-
-        # category, so vehicles (usually the largest count) don't claim
-        # every same-lane slot before motorcycles/bicycles get a turn.
         category_tokens = []
 
         for category in VEHICLE_LIKE_CATEGORIES:
@@ -522,19 +364,11 @@ class GammaSpawnPolicy:
             "walker_speeds": walker_speeds,
             "spawn_records": self.spawn_records,
             "proposed_s": self.proposed_s,
-            # Exposed so a Phase 2 DynamicSpawnManager can continue
-            # sampling from the exact same deterministic stream instead
-            # of seeding a second generator.
             "rng": self.rng,
         }
 
 
 def spawn_actors_gamma_policy(world, ego, dense_route, traffic_manager, cfg, **counts):
-    """
-    Convenience wrapper: build a GammaSpawnPolicy and run() it once.
-    counts may override n_vehicles/n_motorcycles/n_bicycles/n_pedestrians
-    (see GammaSpawnPolicy.run).
-    """
 
     policy = GammaSpawnPolicy(world, ego, dense_route, traffic_manager, cfg)
 
@@ -895,32 +729,8 @@ class DynamicSpawnManager:
             })
 
     def start_initial_pedestrians(self):
-        """
-        Deliberately does NOT call controller.start() -- verified live
-        against this CARLA build that doing so (regardless of
-        destination) snaps every managed pedestrian but the first to
-        carla.Location(0, ~0.73, ~1) the moment the AI controller tries
-        to place it on CARLA's pedestrian crowd navigation mesh, which a
-        sidewalk-lane-graph spawn point (from carla_map.get_waypoint(...,
-        lane_type=Sidewalk), the road network, not the separate Recast
-        nav mesh get_random_location_from_navigation() draws from) isn't
-        guaranteed to sit on. That corrupts relative_s tracking for
-        every pedestrian after the first (see the "발견한 문제" section
-        of this task's report).
-
-        Managed pedestrians are therefore left stationary (spawned,
-        registered, controller never started) so their position stays
-        exactly where Phase 1's sidewalk-waypoint placement put them --
-        correct and trackable, just not walking. Do not call
-        controller.start()/go_to_location() here without re-verifying
-        this against the CARLA build in use.
-        """
 
         return
-
-    # ------------------------------------------------------------
-    # Route progress
-    # ------------------------------------------------------------
 
     def _ego_route_s(self):
         route_s, self.ego_route_index, _offset = route_progress_at_location(
@@ -928,25 +738,12 @@ class DynamicSpawnManager:
             max_offset=self.cfg.SPAWN.MAX_ROUTE_PROJECTION_DISTANCE,
         )
 
-        # Ego itself should always project cleanly onto its own route;
-        # if it somehow doesn't (e.g. briefly off-road), hold the last
-        # known progress rather than propagate None through everything.
         if route_s is None:
             route_s = self.arc_length_table[self.ego_route_index]
 
         return route_s
 
-    # ------------------------------------------------------------
-    # Despawn
-    # ------------------------------------------------------------
-
     def _destroy_managed_actor(self, managed):
-        """
-        Mirrors this project's existing pedestrian/vehicle cleanup
-        convention (controller.stop() before destroy, guard every
-        destroy() against the actor already being gone) so a stale
-        reference here can never take down the whole run.
-        """
 
         try:
             if managed["controller"] is not None and managed["controller"].is_alive:
@@ -966,9 +763,7 @@ class DynamicSpawnManager:
         except RuntimeError:
             pass
 
-    # ------------------------------------------------------------
-    # Per-update maintenance
-    # ------------------------------------------------------------
+   
 
     def update(self, local_frame_id):
         self.update_index += 1
@@ -978,7 +773,6 @@ class DynamicSpawnManager:
         ego_route_s = self._ego_route_s()
         ego_location = self.ego.get_location()
 
-        # ---- 1. Recompute every managed actor's relative_s ----
         live = []  # (managed, relative_s, location) for actors with a valid projection this update
         projection_failed_details = []  # diagnostic rows for actors that failed projection *this* update
         dead_actors_removed = 0  # already destroyed externally (e.g. collision), not by our despawn logic
@@ -1022,10 +816,6 @@ class DynamicSpawnManager:
                     "used_full_search": used_full_search,
                 })
 
-                # PART A: an actor that never recovers a valid projection
-                # has no relative_s and would otherwise sit in the
-                # registry forever (the normal position-based despawn
-                # check below can't even run on it).
                 if managed["consecutive_projection_failures"] >= self.cfg.SPAWN.MAX_PROJECTION_FAILURE_UPDATES:
                     self._destroy_managed_actor(managed)
                     managed["_despawned_for_projection_failure"] = True
@@ -1040,7 +830,6 @@ class DynamicSpawnManager:
             relative_s = route_s - ego_route_s
             live.append((managed, relative_s, location))
 
-        # ---- 2. Despawn: far behind, or (optionally) far ahead ----
         despawn_this_update = 0
         still_managed = []
         still_live = []
@@ -1056,9 +845,6 @@ class DynamicSpawnManager:
                 still_managed.append(managed)
                 still_live.append((managed, relative_s, location))
 
-        # Actors that failed route projection this update, but not yet
-        # despawned for it (PART A), are kept as-is (neither despawned
-        # nor treated as occupying a bin) -- see route_projection_failures.
         projected_ids = {id(m) for m, _s, _loc in live}
         kept_unprojected = [
             m for m in self.managed_actors
@@ -1073,10 +859,6 @@ class DynamicSpawnManager:
         self.total_projection_full_search_attempts += full_search_attempts_this_update
         self.total_projection_full_search_recoveries += full_search_recoveries_this_update
 
-        # ---- 2b. State breakdown diagnostic (PART E) ----
-        # Classified from `live` (pre-despawn) + kept_unprojected, i.e.
-        # the registry as it stood at the *start* of this update -- this
-        # is what led to managed_total_before, not what's left after.
         state_counts = {state: {c: 0 for c in DYNAMIC_CATEGORIES} for state in STATE_NAMES}
 
         for managed, relative_s, _location in live:
@@ -1095,7 +877,6 @@ class DynamicSpawnManager:
                 f"!= managed_total_before={managed_total_before}"
             )
 
-        # ---- 3. Current forward-region bin occupancy per category ----
         current_bin_counts = {
             category: np.zeros(self.n_bins, dtype=int) for category in DYNAMIC_CATEGORIES
         }
@@ -1108,23 +889,14 @@ class DynamicSpawnManager:
                 )
                 current_bin_counts[managed["category"]][bin_index] += 1
 
-        # ---- 4. Deficit per category x bin ----
         deficits = {
             category: np.clip(self.category_bin_targets[category] - current_bin_counts[category], 0, None)
             for category in DYNAMIC_CATEGORIES
         }
 
-        # Fixed for the duration of this update -- current_bin_counts
-        # doesn't change as tokens are processed (only `deficits` does),
-        # so this is "total active_forward count when this update began".
         category_total_current = {c: int(current_bin_counts[c].sum()) for c in DYNAMIC_CATEGORIES}
         category_total_target = {c: int(self.category_bin_targets[c].sum()) for c in DYNAMIC_CATEGORIES}
 
-        # PART D: cap replenishment by the *active_forward* total, not
-        # just bin-local deficit -- a category already at/over its total
-        # target must not get new spawns just because occupancy happens
-        # to be unevenly distributed across bins (this is what
-        # over_target_spawn_attempts was diagnosing in Phase 2.5).
         category_capacity = {
             c: max(category_total_target[c] - category_total_current[c], 0)
             for c in DYNAMIC_CATEGORIES
@@ -1132,7 +904,6 @@ class DynamicSpawnManager:
 
         category_cap_skips_this_update = 0
 
-        # ---- 5. Deterministic interleaved replenishment token list ----
         tokens = []
 
         for category in DYNAMIC_CATEGORIES:
@@ -1143,8 +914,6 @@ class DynamicSpawnManager:
 
         self.rng.shuffle(tokens)
 
-        # Live location lookup, used for spacing checks during
-        # replenishment (actors have moved since spawn time).
         live_vehicle_records = [
             {
                 "road_id": m["road_id"],  # best-effort; refreshed below for spawned-this-update actors only
@@ -1169,10 +938,6 @@ class DynamicSpawnManager:
         same_lane_spawn_rejections_this_update = 0
         blocked_bin_skips_this_update = 0
 
-        # PART E: a (category, bin) that exhausted MAX_ATTEMPTS is
-        # blocked for the *rest of this update* (cleared every update by
-        # being a local variable), instead of every later token for that
-        # same category retrying the same already-failed bin.
         blocked_bins = set()
 
         for category in tokens:
@@ -1192,9 +957,6 @@ class DynamicSpawnManager:
 
             bin_index = max(candidate_bin_indices, key=lambda i: deficits[category][i])
 
-            # Diagnostic only now that category_capacity caps the token
-            # budget above -- kept to verify it actually drops to ~0
-            # (Phase 2.5 acceptance criterion [7]).
             if category_total_current[category] >= category_total_target[category]:
                 over_target_spawn_attempts_this_update += 1
 
@@ -1225,7 +987,6 @@ class DynamicSpawnManager:
         self.total_blocked_bin_skips += blocked_bin_skips_this_update
         self.total_category_cap_skips += category_cap_skips_this_update
 
-        # ---- 6. Stats / log ----
         category_counts = {
             category: int(current_bin_counts[category].sum()) for category in DYNAMIC_CATEGORIES
         }
@@ -1261,19 +1022,17 @@ class DynamicSpawnManager:
             "mean_relative_s": mean_relative_s,
             "bin_mae": bin_mae,
             "route_projection_failures": self.route_projection_failures,
-            # PART E: state breakdown (mutually exclusive, computed pre-despawn).
+
             "state_counts": state_counts,
             "state_totals": state_totals,
-            # PART F: this update's projection failures, with enough detail
-            # to trace a specific actor (see projection_failed_details.csv).
+
             "projection_failed_details": projection_failed_details,
-            # PART G: over-target bin-deficit spawn attempts.
+
             "over_target_spawn_attempts_this_update": over_target_spawn_attempts_this_update,
             "total_over_target_spawn_attempts": self.total_over_target_spawn_attempts,
             "nearest_lead_distance": nearest_lead[1] if nearest_lead else None,
             "nearest_lead_actor_id": nearest_lead[0]["actor_id"] if nearest_lead else None,
             "nearest_lead_speed_kmh": nearest_lead[2] if nearest_lead else None,
-            # Phase 2.5 fix counters (this update / running total).
             "projection_failure_despawns_this_update": projection_failure_despawns_this_update,
             "total_projection_failure_despawns": self.total_projection_failure_despawns,
             "full_search_attempts_this_update": full_search_attempts_this_update,
@@ -1290,14 +1049,10 @@ class DynamicSpawnManager:
 
         self.history.append(snapshot)
 
-        print(
-            f"[SpawnManager] update={self.update_index} ego_s={ego_route_s:.1f}m"
-        )
+        print(f"[SpawnManager] update={self.update_index} ego_s={ego_route_s:.1f}m")
 
         for category in DYNAMIC_CATEGORIES:
-            print(
-                f"  {category:12s} {category_counts[category]:3d}/{category_targets[category]:<3d}"
-            )
+            print(f"  {category:12s} {category_counts[category]:3d}/{category_targets[category]:<3d}")
 
         print(
             f"  despawned={despawn_this_update}(+{projection_failure_despawns_this_update} projection) "
@@ -1310,13 +1065,6 @@ class DynamicSpawnManager:
         return snapshot
 
     def _nearest_same_lane_lead(self, ego_location, still_live):
-        """
-        Diagnostic only (PART C item 3): nearest managed vehicle-like
-        actor ahead of ego in the SAME (road_id, lane_id), preferring
-        that over pure Euclidean distance. Returns (managed, distance_m,
-        speed_kmh) or None if ego isn't on a Driving lane or nothing
-        qualifies.
-        """
 
         ego_waypoint = self.carla_map.get_waypoint(ego_location, project_to_road=True, lane_type=carla.LaneType.Driving)
 
@@ -1347,18 +1095,8 @@ class DynamicSpawnManager:
 
         return best, best_distance, speed_kmh
 
-    # ------------------------------------------------------------
-    # Bin-constrained replenishment (reuses Phase 1 lane/sidewalk/
-    # spacing/blueprint logic; only the distance sampling is new)
-    # ------------------------------------------------------------
 
     def _try_replenish_vehicle_like(self, category, bin_low, bin_high, ego_route_s, live_vehicle_records, ego_road_id, ego_lane_id):
-        """
-        Returns (actor_or_None, same_lane_rejections) -- the second
-        value counts how many of this call's MAX_ATTEMPTS internal
-        retries were rejected specifically by the PART C same-lane
-        near-ego guard (diagnostic: total_same_lane_spawn_rejections).
-        """
 
         blueprint_pool = self.vehicle_pools.get(category, [])
 
@@ -1386,10 +1124,6 @@ class DynamicSpawnManager:
             if lane_waypoint is None:
                 continue
 
-            # PART C: a same-lane candidate spawned close ahead of ego
-            # reads to BasicAgent as a lead vehicle to yield to, and was
-            # diagnosed (Phase 2.5) as the main driver of ego repeatedly
-            # stalling near 0 km/h. Adjacent lanes are unaffected.
             if (
                 ego_road_id is not None
                 and lane_waypoint.road_id == ego_road_id
@@ -1514,15 +1248,6 @@ class DynamicSpawnManager:
                 if len(values) > 1:
                     speed = float(values[1])
 
-            # Deliberately NOT calling controller.start()/go_to_location()
-            # here -- verified live that starting the AI controller snaps
-            # a sidewalk-lane-graph spawn point off CARLA's separate
-            # pedestrian nav mesh, corrupting this actor's own position
-            # (and therefore relative_s tracking). See
-            # DynamicSpawnManager.start_initial_pedestrians() for the
-            # full explanation; do not re-add this without re-verifying
-            # against the CARLA build in use.
-
             live_pedestrian_locations.append(transform.location)
 
             managed = {
@@ -1550,10 +1275,6 @@ class DynamicSpawnManager:
             return walker
 
         return None
-
-    # ------------------------------------------------------------
-    # Cleanup
-    # ------------------------------------------------------------
 
     def destroy_all(self):
         for managed in self.managed_actors:

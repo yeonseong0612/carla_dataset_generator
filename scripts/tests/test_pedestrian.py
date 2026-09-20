@@ -2,7 +2,7 @@ import carla
 
 from CFG.config import cfg
 from src.simulation.vehicle import spawn_ego_at_available_point, destroy_vehicle
-from src.simulation.traffic import configure_traffic_manager, spawn_traffic_vehicles, destroy_traffic_vehicles
+from src.simulation.traffic import configure_traffic_manager, destroy_traffic_vehicles
 from src.simulation.pedestrian import spawn_pedestrians, start_pedestrians, destroy_pedestrians
 
 
@@ -42,8 +42,6 @@ def main():
         ego = spawn_ego_at_available_point(world, spawn_points)
         ego.set_simulate_physics(False)
 
-        vehicles = spawn_traffic_vehicles(world, traffic_manager, ego, cfg)
-
         walkers, controllers, walker_speeds = spawn_pedestrians(world, cfg)
 
         world.tick()
@@ -60,7 +58,6 @@ def main():
 
         print(f"Current map       : {carla_map.name}")
         print(f"Ego vehicle       : {ego.type_id}")
-        print(f"NPC vehicles      : {len(vehicles)}/{cfg.TRAFFIC.NUM_VEHICLES}")
         print(f"Pedestrians       : {len(walkers)}/{cfg.PEDESTRIAN.NUM_WALKERS}")
         print(f"Controllers       : {len(controllers)}")
         print(f"Simulation        : {cfg.SIMULATION.FPS} Hz")

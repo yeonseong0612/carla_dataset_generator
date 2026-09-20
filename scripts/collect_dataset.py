@@ -431,22 +431,8 @@ def validate_sequence(
         "poses.csv",
     )
 
-    gnss_path = os.path.join(
-        root,
-        "navigation",
-        "gnss.csv",
-    )
-
-    imu_path = os.path.join(
-        root,
-        "navigation",
-        "imu.csv",
-    )
-
     for path in [
         pose_path,
-        gnss_path,
-        imu_path,
     ]:
         if not os.path.isfile(path):
             errors.append(
@@ -508,12 +494,6 @@ def validate_sequence(
 
         "poses":
             pose_path,
-
-        "gnss":
-            gnss_path,
-
-        "imu":
-            imu_path,
     }
 
     for name, path in (

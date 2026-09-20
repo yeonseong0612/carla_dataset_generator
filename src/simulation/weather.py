@@ -1,10 +1,10 @@
 '''
 weather.py
 
-Canonical weather configuration for CARLA dataset generarion.
+Canonical weather configuration for CARLA dataset generation.
 
-Conditions
------------
+## Conditions
+
 day_clear
 day_rain
 day_fog
@@ -12,20 +12,21 @@ night_clear
 night_rain
 night_fog
 
-Policy
------------
-1. Celar / Rain:
-    - Use CARLA built-in WeatherParameters presets directrly.
+## Policy
+
+1. Clear / Rain:
+   - Use CARLA built-in WeatherParameters presets directly.
 
 2. Fog:
-    - CARLA has no named FoggyNoon / FoggyNight preset in the
-      currently used version, so CloudyNoon / CloudyNight are used
-      as base presets and only fog-related parameters are moified.
+   - CARLA has no named FoggyNoon / FoggyNight preset in the
+     currently used version.
+   - Therefore, fog conditions are defined explicitly using
+     carla.WeatherParameters with fixed fog-related parameters.
 
 3. Day / Night pairs:
-    - Environmental severity is kept identical.
-      The main differnece is CARLA's day/night illumionation.
-
+   - Environmental severity is kept identical within each weather type.
+   - The main difference between day and night conditions is the
+     sun altitude angle and resulting illumination.
 '''
 
 import carla

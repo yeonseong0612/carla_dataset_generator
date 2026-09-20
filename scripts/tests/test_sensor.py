@@ -1,5 +1,4 @@
 import os
-import csv
 import queue
 import carla
 import numpy as np
@@ -9,8 +8,6 @@ from src.simulation.vehicle import spawn_ego, destroy_vehicle
 from src.sensors.camera import create_camera_rig_blueprints, create_camera_rig_transforms
 from src.sensors.lidar import create_lidar_blueprint, create_lidar_transform
 from src.sensors.radar import create_radar_blueprint, create_radar_transform
-from src.sensors.gnss import create_gnss_blueprint, create_gnss_transform
-from src.sensors.imu import create_imu_blueprint, create_imu_transform
 from src.sensors.utils import spawn_sensor, destroy_sensors
 
 
@@ -78,45 +75,6 @@ def save_radar(data, output_dir):
     return points
 
 
-def write_csv_headers(gnss_path, imu_path):
-    with open(gnss_path, "w", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow(["frame", "timestamp", "latitude", "longitude", "altitude"])
-
-    with open(imu_path, "w", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([
-            "frame", "timestamp",
-            "accel_x", "accel_y", "accel_z",
-            "gyro_x", "gyro_y", "gyro_z",
-            "compass"
-        ])
-
-
-def append_gnss(path, data):
-    with open(path, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([
-            data.frame,
-            data.timestamp,
-            data.latitude,
-            data.longitude,
-            data.altitude
-        ])
-
-
-def append_imu(path, data):
-    with open(path, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([
-            data.frame,
-            data.timestamp,
-            data.accelerometer.x,
-            data.accelerometer.y,
-            data.accelerometer.z,
-            data.gyroscope.x,
-            data.gyroscope.y,
-            data.gyroscope.z,
-            data.compass
-        ])
-
-
 def main():
     client = carla.Client(cfg.CARLA.HOST, cfg.CARLA.PORT)
     client.set_timeout(cfg.CARLA.TIMEOUT)
@@ -144,13 +102,6 @@ def main():
 
     for path in output_dirs.values():
         os.makedirs(path, exist_ok=True)
-
-    navigation_dir = os.path.join(output_root, "navigation")
-    os.makedirs(navigation_dir, exist_ok=True)
-
-    gnss_csv = os.path.join(navigation_dir, "gnss.csv")
-    imu_csv = os.path.join(navigation_dir, "imu.csv")
-    write_csv_headers(gnss_csv, imu_csv)
 
     ego = None
     sensors = []
@@ -188,18 +139,6 @@ def main():
         sensors.append(radar)
         sensor_queues["radar"] = radar_queue
 
-        gnss = spawn_sensor(world, ego, create_gnss_blueprint(world, cfg), create_gnss_transform(cfg))
-        gnss_queue = queue.Queue()
-        gnss.listen(gnss_queue.put)
-        sensors.append(gnss)
-        sensor_queues["gnss"] = gnss_queue
-
-        imu = spawn_sensor(world, ego, create_imu_blueprint(world, cfg), create_imu_transform(cfg))
-        imu_queue = queue.Queue()
-        imu.listen(imu_queue.put)
-        sensors.append(imu)
-        sensor_queues["imu"] = imu_queue
-
         print(f"Current map : {carla_map.name}")
         print(f"Ego vehicle : {ego.type_id}")
         print(f"Simulation  : {cfg.SIMULATION.FPS} Hz")
@@ -230,16 +169,11 @@ def main():
             lidar_points = save_lidar(frame_data["lidar"], output_dirs["lidar"])
             radar_points = save_radar(frame_data["radar"], output_dirs["radar"])
 
-            append_gnss(gnss_csv, frame_data["gnss"])
-            append_imu(imu_csv, frame_data["imu"])
-
             print(
                 f"[{i + 1:02d}/{NUM_TEST_FRAMES}] "
                 f"frame={frame} "
                 f"lidar={lidar_points.shape[0]} "
-                f"radar={radar_points.shape[0]} "
-                f"gnss={frame_data['gnss'].frame} "
-                f"imu={frame_data['imu'].frame}"
+                f"radar={radar_points.shape[0]}"
             )
 
         print(f"Saved to: {output_root}")
