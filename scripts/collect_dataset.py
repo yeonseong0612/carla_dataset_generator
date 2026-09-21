@@ -893,6 +893,27 @@ def collect_sequence(
             cfg=cfg,
             route_id=route_id,
             condition=condition,
+            spawn_info={
+                "background_policy": background_policy,
+                "initial_frame_object_target": (
+                    initial_counts["initial_frame_object_target"]
+                    if background_policy == "canonical" else None
+                ),
+                "initial_spawn_requested": dict(spawn_result["requested"]),
+                "initial_spawn_actual": {
+                    **{
+                        category: len(actors)
+                        for category, actors in traffic_actors.items()
+                    },
+                    "pedestrian": len(walkers),
+                },
+                # Dynamic population is not a single count; per-run
+                # spawn/despawn statistics live in this sibling file.
+                "dynamic_population_summary": (
+                    "canonical_spawn_summary.json"
+                    if background_policy == "canonical" else None
+                ),
+            },
         )
 
         # ====================================================

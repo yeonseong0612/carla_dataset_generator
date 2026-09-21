@@ -1,26 +1,3 @@
-"""
-route.py
-
-Route loading and processing utilities for CARLA dataset generation.
-
-Responsibilities
-----------------
-1. Load sparse control points from route XML.
-2. Project control points onto CARLA driving lanes.
-3. Build a dense route using GlobalRoutePlanner.
-4. Estimate route progress during driving.
-5. Determine route completion.
-
-This module does NOT handle:
-- vehicle control
-- target speed
-- traffic lights
-- collision / stuck handling
-- visualization
-
-Those belong to controller / debug modules.
-"""
-
 from __future__ import annotations
 
 import math
@@ -87,17 +64,10 @@ def project_control_points(carla_map: carla.Map, control_points: Sequence[carla.
     projected = []
 
     for index, location in enumerate(control_points):
-
         waypoint = carla_map.get_waypoint(location, project_to_road=True, lane_type=carla.LaneType.Driving)
 
         if waypoint is None:
-            raise RuntimeError(
-                "Failed to project route control point "
-                f"{index}: "
-                f"({location.x:.2f}, "
-                f"{location.y:.2f}, "
-                f"{location.z:.2f})"
-            )
+            raise RuntimeError(f"Failed to project route control point {index}: ({location.x:.2f}, {location.y:.2f}, {location.z:.2f})")
 
         projected.append(waypoint)
 
@@ -106,10 +76,7 @@ def project_control_points(carla_map: carla.Map, control_points: Sequence[carla.
 def build_dense_route(carla_map: carla.Map, control_waypoints: Sequence[carla.Waypoint], sampling_resolution: float = 2.0) -> DenseRoute:
 
     if len(control_waypoints) < 2:
-        raise ValueError(
-            "At least 2 control waypoints are required "
-            "to build a dense route."
-        )
+        raise ValueError("At least 2 control waypoints are required to build a dense route.")
 
     grp = GlobalRoutePlanner(carla_map, sampling_resolution,)
 
@@ -123,12 +90,7 @@ def build_dense_route(carla_map: carla.Map, control_waypoints: Sequence[carla.Wa
         segment = grp.trace_route(start, end)
 
         if not segment:
-            raise RuntimeError(
-                f"GlobalRoutePlanner failed for segment "
-                f"{segment_index}: "
-                f"({start.x:.2f}, {start.y:.2f}) -> "
-                f"({end.x:.2f}, {end.y:.2f})"
-            )
+            raise RuntimeError(f"GlobalRoutePlanner failed for segment {segment_index}: ({start.x:.2f}, {start.y:.2f}) -> ({end.x:.2f}, {end.y:.2f})")
 
         if dense_route:
             segment = segment[1:]
@@ -143,15 +105,12 @@ def build_dense_route(carla_map: carla.Map, control_waypoints: Sequence[carla.Wa
 
 
 def distance_2d(a: carla.Location, b: carla.Location) -> float:
-
     dx = a.x - b.x
     dy = a.y - b.y
-
     return math.hypot(dx, dy)
 
 
 def find_nearest_route_index(vehicle_location: carla.Location, dense_route: Sequence, start_index: int = 0, search_window: int = 50) -> int:
-
 
     if not dense_route:
         raise ValueError("dense_route is empty.")
@@ -164,9 +123,7 @@ def find_nearest_route_index(vehicle_location: carla.Location, dense_route: Sequ
     nearest_distance = float("inf")
 
     for index in range(start_index, end_index):
-
         waypoint = dense_route[index][0]
-
         distance = distance_2d(vehicle_location, waypoint.transform.location,)
 
         if distance < nearest_distance:
@@ -210,10 +167,8 @@ def is_route_completed(vehicle_location: carla.Location, route_index: int, dense
 
     return (progress >= progress_threshold and goal_distance <= goal_distance_threshold)
 
+
 def list_route_ids(xml_path):
-    """
-    Return all route IDs contained in a CARLA route XML file.
-    """
 
     import xml.etree.ElementTree as ET
 

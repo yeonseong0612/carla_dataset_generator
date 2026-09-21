@@ -5,80 +5,29 @@ import math
 
 
 class MetadataWriter:
-    """
-    Write sequence-level and frame-level metadata.
-
-    Expected sequence structure:
-
-    sequence_root/
-    ├─ calibration.json
-    ├─ sequence.json
-    ├─ timestamps.csv
-    ├─ pose/
-    │  └─ poses.csv
-    ├─ ego_state.csv
-    ├─ rgb_left/
-    ├─ rgb_right/
-    ├─ depth/
-    ├─ optical_flow/
-    ├─ semantic/
-    ├─ lidar/
-    ├─ radar/
-    └─ navigation/
-    """
-
-    def __init__(
-        self,
-        sequence_root,
-        map_name,
-        sequence_id,
-        cfg,
-        route_id=None,
-        condition=None,
-    ):
-        self.sequence_root = os.path.abspath(
-            sequence_root
-        )
+    def __init__(self, sequence_root, map_name, sequence_id, cfg, route_id=None, condition=None, spawn_info=None):
+        self.sequence_root = os.path.abspath(sequence_root)
 
         self.map_name = map_name
         self.sequence_id = sequence_id
         self.route_id = route_id
         self.condition = condition
         self.cfg = cfg
+        
+        self.spawn_info = spawn_info
 
         self.num_frames = 0
 
-        # ----------------------------------------------------
-        # Output paths
-        # ----------------------------------------------------
+        os.makedirs(self.sequence_root, exist_ok=True)
 
-        os.makedirs(
-            self.sequence_root,
-            exist_ok=True,
-        )
+        self.pose_dir = os.path.join(self.sequence_root, "pose",)
 
-        self.pose_dir = os.path.join(
-            self.sequence_root,
-            "pose",
-        )
+        os.makedirs(self.pose_dir, exist_ok=True)
+        self.timestamps_path = os.path.join(self.sequence_root, "timestamps.csv")
 
-        os.makedirs(
-            self.pose_dir,
-            exist_ok=True,
-        )
+        self.pose_path = os.path.join(self.pose_dir, "poses.csv")
 
-        self.timestamps_path = os.path.join(
-            self.sequence_root,
-            "timestamps.csv",
-        )
-
-        self.pose_path = os.path.join(
-            self.pose_dir,
-            "poses.csv",
-        )
-
-        self.ego_state_path = os.path.join(
-            self.sequence_root,
+        self.ego_state_path = os.path.join(self.sequence_root,
             "ego_state.csv",
         )
 
@@ -86,10 +35,6 @@ class MetadataWriter:
             self.sequence_root,
             "sequence.json",
         )
-
-        # ----------------------------------------------------
-        # Open CSV files
-        # ----------------------------------------------------
 
         self.timestamps_file = open(
             self.timestamps_path,
@@ -127,20 +72,8 @@ class MetadataWriter:
         self._write_headers()
         self._write_sequence_json()
 
-
-    # ========================================================
-    # Headers
-    # ========================================================
-
     def _write_headers(self):
-
-        self.timestamps_writer.writerow(
-            [
-                "frame_id",
-                "carla_frame",
-                "timestamp",
-            ]
-        )
+        self.timestamps_writer.writerow(["frame_id", "carla_frame", "timestamp"])
 
         self.pose_writer.writerow(
             [
@@ -192,9 +125,37 @@ class MetadataWriter:
         )
 
 
-    # ========================================================
-    # Sequence metadata
-    # ========================================================
+    def _build_spawn_policy_record(self):
+        spawn = self.cfg.SPAWN
+
+        record = {
+            "spawn_seed": spawn.SEED,
+
+            # Category composition weights: the initial scene target is
+            # split across categories in this ratio (not absolute counts).
+            "category_weights": {
+                "vehicle": spawn.N_VEHICLES,
+                "motorcyclist": spawn.N_MOTORCYCLES,
+                "cyclist": spawn.N_BICYCLES,
+                "pedestrian": spawn.N_PEDESTRIANS,
+            },
+
+            "frame_object_gamma": {
+                "shape": spawn.FRAME_OBJECT_GAMMA_SHAPE,
+                "scale": spawn.FRAME_OBJECT_GAMMA_SCALE,
+                "min": spawn.FRAME_OBJECT_MIN,
+                "max": spawn.FRAME_OBJECT_MAX,
+                "target_interval_min_frames": spawn.FRAME_OBJECT_TARGET_INTERVAL_MIN,
+                "target_interval_max_frames": spawn.FRAME_OBJECT_TARGET_INTERVAL_MAX,
+                "max_new_per_update": spawn.FRAME_OBJECT_MAX_NEW_PER_UPDATE,
+                "max_prune_per_update": spawn.FRAME_OBJECT_MAX_PRUNE_PER_UPDATE,
+            },
+        }
+
+        if self.spawn_info:
+            record.update(self.spawn_info)
+
+        return record
 
     def _write_sequence_json(self):
 
@@ -218,17 +179,8 @@ class MetadataWriter:
             "pedestrian_seed":
                 self.cfg.PEDESTRIAN.SEED,
 
-            "num_vehicles":
-                self.cfg.TRAFFIC.NUM_VEHICLES,
-
-            "num_cyclists":
-                self.cfg.TRAFFIC.NUM_CYCLISTS,
-
-            "num_motorcyclists":
-                self.cfg.TRAFFIC.NUM_MOTORCYCLISTS,
-
-            "num_pedestrians":
-                self.cfg.PEDESTRIAN.NUM_WALKERS,
+            "spawn_policy":
+                self._build_spawn_policy_record(),
 
             "num_frames":
                 self.num_frames,
@@ -242,114 +194,30 @@ class MetadataWriter:
             },
         }
 
-        with open(
-            self.sequence_path,
-            "w",
-            encoding="utf-8",
-        ) as file:
+        with open(self.sequence_path, "w", encoding="utf-8") as file:
+            json.dump(data, file, indent=2)
 
-            json.dump(
-                data,
-                file,
-                indent=2,
-            )
+    def write_frame(self, frame_id, carla_frame, timestamp, ego, route_status=None,):
+        frame_name = (f"{int(frame_id):06d}")
+        transform = (ego.get_transform())
+        velocity = (ego.get_velocity())
+        acceleration = (ego.get_acceleration())
+        angular_velocity = (ego.get_angular_velocity())
+        control = (ego.get_control())
 
-
-    # ========================================================
-    # Per-frame metadata
-    # ========================================================
-
-    def write_frame(
-        self,
-        frame_id,
-        carla_frame,
-        timestamp,
-        ego,
-        route_status=None,
-    ):
-        """
-        Write metadata for one synchronized CARLA frame.
-
-        route_status can be obtained from:
-
-            controller.get_status()
-
-        Expected optional fields:
-            route_index
-            progress
-            goal_distance
-        """
-
-        frame_name = (
-            f"{int(frame_id):06d}"
-        )
-
-        transform = (
-            ego.get_transform()
-        )
-
-        velocity = (
-            ego.get_velocity()
-        )
-
-        acceleration = (
-            ego.get_acceleration()
-        )
-
-        angular_velocity = (
-            ego.get_angular_velocity()
-        )
-
-        control = (
-            ego.get_control()
-        )
-
-        # CARLA velocity is m/s.
-        speed_mps = math.sqrt(
-            velocity.x ** 2
-            + velocity.y ** 2
-            + velocity.z ** 2
-        )
-
-        # ----------------------------------------------------
-        # Route metadata
-        # ----------------------------------------------------
+        speed_mps = math.sqrt(velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2)
 
         if route_status is None:
-
             route_index = None
             route_progress = None
             goal_distance = None
 
         else:
+            route_index = route_status.get("route_index")
+            route_progress = route_status.get("progress")
+            goal_distance = route_status.get("goal_distance")
 
-            route_index = route_status.get(
-                "route_index"
-            )
-
-            route_progress = route_status.get(
-                "progress"
-            )
-
-            goal_distance = route_status.get(
-                "goal_distance"
-            )
-
-        # ----------------------------------------------------
-        # Timestamp
-        # ----------------------------------------------------
-
-        self.timestamps_writer.writerow(
-            [
-                frame_name,
-                carla_frame,
-                timestamp,
-            ]
-        )
-
-        # ----------------------------------------------------
-        # Ego pose
-        # ----------------------------------------------------
+        self.timestamps_writer.writerow([frame_name, carla_frame, timestamp])
 
         self.pose_writer.writerow(
             [
@@ -366,10 +234,6 @@ class MetadataWriter:
                 transform.rotation.yaw,
             ]
         )
-
-        # ----------------------------------------------------
-        # Ego state
-        # ----------------------------------------------------
 
         self.ego_state_writer.writerow(
             [
@@ -406,95 +270,44 @@ class MetadataWriter:
 
         self.num_frames += 1
 
-
-    # ========================================================
-    # Flush
-    # ========================================================
-
     def flush(self):
 
-        if (
-            self.timestamps_file is not None
-            and not self.timestamps_file.closed
-        ):
+        if (self.timestamps_file is not None and not self.timestamps_file.closed):
             self.timestamps_file.flush()
 
-        if (
-            self.pose_file is not None
-            and not self.pose_file.closed
-        ):
+        if (self.pose_file is not None and not self.pose_file.closed):
             self.pose_file.flush()
 
-        if (
-            self.ego_state_file is not None
-            and not self.ego_state_file.closed
-        ):
+        if (self.ego_state_file is not None and not self.ego_state_file.closed):
             self.ego_state_file.flush()
 
-
-    # ========================================================
-    # Finalize
-    # ========================================================
-
     def finalize(self):
-        """
-        Update sequence.json with final frame count
-        and close all files.
-        """
-
         self.flush()
-
         self._write_sequence_json()
-
         self.close()
 
 
-    # ========================================================
-    # Close
-    # ========================================================
-
     def close(self):
 
-        if (
-            self.timestamps_file is not None
-            and not self.timestamps_file.closed
-        ):
+        if (self.timestamps_file is not None and not self.timestamps_file.closed):
             self.timestamps_file.close()
 
-        if (
-            self.pose_file is not None
-            and not self.pose_file.closed
-        ):
+        if (self.pose_file is not None and not self.pose_file.closed):
             self.pose_file.close()
 
-        if (
-            self.ego_state_file is not None
-            and not self.ego_state_file.closed
-        ):
+        if (self.ego_state_file is not None and not self.ego_state_file.closed):
             self.ego_state_file.close()
 
 
-    # ========================================================
-    # Context manager
-    # ========================================================
 
     def __enter__(self):
         return self
 
 
-    def __exit__(
-        self,
-        exc_type,
-        exc_value,
-        traceback,
-    ):
-        # If collection finished normally,
-        # write final num_frames.
+    def __exit__(self, exc_type, exc_value, traceback):
         if exc_type is None:
             self.finalize()
         else:
-            # Even on failure preserve the number
-            # of successfully written frames.
             try:
                 self._write_sequence_json()
             finally:

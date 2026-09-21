@@ -1,28 +1,5 @@
-"""
-src/data/projection.py
-
-Shared ego-frame -> image-pixel camera projection. Extracted from
-scripts/tools/visualize_annotations.py's CameraProjector (the existing
-projection helper -- CLAUDE.md task "Finalize Camera-Valid Annotation
-Filtering" requires reusing it, not inventing a new one) so both that
-post-hoc debug tool AND the live annotation pipeline
-(src/data/annotation.py) share exactly one implementation.
-
-Same convention both already used independently before this module
-existed:
-
-    vertices_ego_m (ego frame)
-        -> T_camera_from_ego -> CARLA camera frame (x fwd, y right, z up)
-        -> T_cv_from_carla   -> CV camera frame (x right, y down, z fwd)
-        -> K                 -> (u, v)
-
-p_A = T_A_from_B @ p_B (same convention as src/data/calibration.py).
-"""
-
 import numpy as np
 
-# A vertex with z_cv <= this is behind (or level with) the camera and
-# cannot be projected (division by a non-positive z is meaningless).
 Z_CV_EPS = 1e-3
 
 
@@ -36,9 +13,6 @@ class CameraProjector:
 
     @classmethod
     def from_calibration(cls, calibration, camera_name):
-        """Construct from an already-loaded calibration.json dict (post-hoc
-        tools -- e.g. scripts/tools/visualize_annotations.py)."""
-
         cam = calibration["cameras"][camera_name]
 
         return cls(
@@ -51,19 +25,6 @@ class CameraProjector:
 
     @classmethod
     def from_live_actors(cls, ego_vehicle, camera_actor):
-        """
-        Construct directly from live CARLA actors (the annotation
-        pipeline, src/data/annotation.py) -- reuses
-        src/data/calibration.py's own extraction functions verbatim
-        (same values save_calibration() already writes to
-        calibration.json for this same camera), so this is not a second
-        source of truth for K/extrinsics, just a second consumer of the
-        same one. Call once (e.g. AnnotationWriter.__init__) and reuse --
-        a rigidly-mounted camera's transform relative to ego does not
-        change across a sequence, exactly like calibration.json itself
-        being written once at sequence start.
-        """
-
         from src.data.calibration import (
             get_camera_calibration,
             get_sensor_extrinsic,
@@ -84,11 +45,6 @@ class CameraProjector:
         )
 
     def ego_to_cv(self, points_ego):
-        """
-        points_ego: (N, 3) array in the ego frame.
-        Returns (N, 3) array in the CV camera frame (x right, y down, z fwd).
-        """
-
         points_ego = np.asarray(points_ego, dtype=np.float64)
         n = points_ego.shape[0]
         homo = np.hstack([points_ego, np.ones((n, 1))])
@@ -101,14 +57,6 @@ class CameraProjector:
         return p_cv
 
     def project(self, points_cv):
-        """
-        points_cv: (N, 3) in CV camera frame.
-        Returns (uv (N,2), valid (N,) bool) where valid marks z_cv > eps
-        (see Z_CV_EPS -- behind-camera points are NOT projected, robust
-        against garbage/division-by-non-positive-z rather than
-        projecting a meaningless coordinate).
-        """
-
         points_cv = np.asarray(points_cv, dtype=np.float64)
         z = points_cv[:, 2]
         valid = z > Z_CV_EPS

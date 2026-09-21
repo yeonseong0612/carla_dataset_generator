@@ -1,48 +1,8 @@
-"""
-calibration.py
-
-Generate and save sensor calibration information from CARLA.
-
-Coordinate conventions
-----------------------
-CARLA / Unreal sensor coordinates:
-    x : forward
-    y : right
-    z : up
-
-Conventional computer-vision camera coordinates:
-    x : right
-    y : down
-    z : forward
-
-Transform naming convention
----------------------------
-T_A_from_B transforms a point expressed in frame B
-into frame A:
-
-    p_A = T_A_from_B @ p_B
-"""
-
 import json
 import math
 import os
 
 import numpy as np
-
-
-# ============================================================
-# Coordinate-system conversion
-# ============================================================
-
-# CARLA camera coordinates:
-#   x forward, y right, z up
-#
-# CV camera coordinates:
-#   x right, y down, z forward
-#
-# [x_cv]   [ 0  1  0] [x_carla]
-# [y_cv] = [ 0  0 -1] [y_carla]
-# [z_cv]   [ 1  0  0] [z_carla]
 
 T_CV_FROM_CARLA = np.array(
     [
@@ -54,36 +14,13 @@ T_CV_FROM_CARLA = np.array(
     dtype=np.float64,
 )
 
-T_CARLA_FROM_CV = np.linalg.inv(
-    T_CV_FROM_CARLA
-)
+T_CARLA_FROM_CV = np.linalg.inv(T_CV_FROM_CARLA)
 
-
-# ============================================================
-# Transform utilities
-# ============================================================
 
 def carla_transform_to_matrix(transform):
-    """
-    Convert carla.Transform to a 4x4 homogeneous matrix.
-
-    The resulting matrix represents:
-
-        T_parent_from_local
-
-    For a world transform:
-
-        p_world = T_world_from_actor @ p_actor
-    """
-
-    # Modern CARLA versions expose get_matrix().
     if hasattr(transform, "get_matrix"):
-        return np.asarray(
-            transform.get_matrix(),
-            dtype=np.float64,
-        )
+        return np.asarray(transform.get_matrix(), dtype=np.float64)
 
-    # Fallback implementation for older CARLA versions.
     location = transform.location
     rotation = transform.rotation
 
@@ -134,59 +71,24 @@ def carla_transform_to_matrix(transform):
 
 
 def invert_transform(matrix):
-    """
-    Invert a rigid 4x4 homogeneous transformation.
-    """
-
-    matrix = np.asarray(
-        matrix,
-        dtype=np.float64,
-    )
+    matrix = np.asarray(matrix, dtype=np.float64)
 
     R = matrix[:3, :3]
     t = matrix[:3, 3]
 
-    inverse = np.eye(
-        4,
-        dtype=np.float64,
-    )
+    inverse = np.eye(4, dtype=np.float64,)
 
     inverse[:3, :3] = R.T
     inverse[:3, 3] = -R.T @ t
 
     return inverse
 
-
-# ============================================================
-# Camera intrinsics
-# ============================================================
-
-def camera_intrinsic_matrix(
-    width,
-    height,
-    fov_deg,
-):
-    """
-    Compute CARLA pinhole camera intrinsic matrix.
-
-    CARLA's camera 'fov' attribute is the horizontal FOV.
-
-    Assumes square pixels:
-
-        fx = fy
-    """
-
+def camera_intrinsic_matrix(width, height, fov_deg):
     width = int(width)
     height = int(height)
     fov_deg = float(fov_deg)
 
-    fx = width / (
-        2.0
-        * math.tan(
-            math.radians(fov_deg) / 2.0
-        )
-    )
-
+    fx = width / (2.0 * math.tan(math.radians(fov_deg) / 2.0))
     fy = fx
 
     cx = width / 2.0
@@ -205,11 +107,6 @@ def camera_intrinsic_matrix(
 
 
 def get_camera_calibration(camera_actor):
-    """
-    Extract camera resolution, FOV and intrinsic matrix
-    directly from a CARLA camera actor.
-    """
-
     attributes = camera_actor.attributes
 
     width = int(
@@ -360,40 +257,7 @@ def get_stereo_calibration(
 # Full calibration generation
 # ============================================================
 
-def build_calibration(
-    ego_vehicle,
-    sensor_actors,
-    left_camera_name="rgb_left",
-    right_camera_name="rgb_right",
-):
-    """
-    Build complete calibration dictionary.
-
-    Parameters
-    ----------
-    ego_vehicle:
-        CARLA ego vehicle actor.
-
-    sensor_actors:
-        Dictionary such as:
-
-        {
-            "rgb_left": actor,
-            "rgb_right": actor,
-            "depth": actor,
-            "semantic": actor,
-            "optical_flow": actor,
-            "lidar": actor,
-            "radar": actor,
-        }
-
-    left_camera_name:
-        Name of the left stereo RGB camera.
-
-    right_camera_name:
-        Name of the right stereo RGB camera.
-    """
-
+def build_calibration(ego_vehicle, sensor_actors, left_camera_name="rgb_left", right_camera_name="rgb_right"):
     if left_camera_name not in sensor_actors:
         raise KeyError(
             f"Left camera "
