@@ -180,7 +180,7 @@ def vehicle_light_state_to_dict(actor):
 
 
 class AnnotationWriter:
-    def __init__(self, sequence_root, cfg, ego=None, left_camera_actor=None):
+    def __init__(self, sequence_root, cfg, ego=None, left_camera_actor=None, logical_id_resolver=None):
         """
         ego, left_camera_actor: if both are given, camera-valid filtering
         (FOV/truncation, depth-based occlusion, minimum pixel size -- see
@@ -195,6 +195,12 @@ class AnnotationWriter:
 
         self.sequence_root = sequence_root
         self.cfg = cfg
+
+        # Optional callable: canonical CARLA actor id -> persistent logical
+        # id (src/data/world_state.py WorldStateRecorder.logical_id_for).
+        # When given, every annotation carries "logical_id" so labels can be
+        # joined to geometry/world_state across weather replays.
+        self.logical_id_resolver = logical_id_resolver
 
         self.object_3d_dir = os.path.join(sequence_root, "labels", "object_3d")
 
@@ -421,6 +427,9 @@ class AnnotationWriter:
             "distance_m": distance_m,
         }
 
+
+        if self.logical_id_resolver is not None:
+            data["logical_id"] = self.logical_id_resolver(actor.id)
 
         if subcategory is not None:
             data["subcategory"] = subcategory

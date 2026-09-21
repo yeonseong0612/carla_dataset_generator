@@ -50,6 +50,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from src.data.layout import resolve_geometry_root  # noqa: E402
 from scripts.tools.bbox_geometry import BoxGeometryError, derive_edges_from_vertices
 from src.data.projection import CameraProjector
 
@@ -90,13 +91,13 @@ def category_color_bgr(category, subcategory):
 # ------------------------------------------------------------------
 
 def load_calibration(sequence_root):
-    path = os.path.join(sequence_root, "calibration.json")
+    path = os.path.join(resolve_geometry_root(sequence_root), "calibration.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def load_annotation(sequence_root, frame_id):
-    path = os.path.join(sequence_root, "labels", "object_3d", f"{frame_id:06d}.json")
+    path = os.path.join(resolve_geometry_root(sequence_root), "labels", "object_3d", f"{frame_id:06d}.json")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -339,7 +340,7 @@ def render_bev(annotation, range_m=60.0, size_px=800):
 # ------------------------------------------------------------------
 
 def discover_available_frames(sequence_root):
-    object_dir = os.path.join(sequence_root, "labels", "object_3d")
+    object_dir = os.path.join(resolve_geometry_root(sequence_root), "labels", "object_3d")
     files = sorted(glob.glob(os.path.join(object_dir, "*.json")))
     ids = []
     for p in files:
@@ -372,7 +373,7 @@ def pick_samples(available, frames, num_samples):
 
 def main():
     parser = argparse.ArgumentParser(description="Reproject stored 3D annotations onto rgb_left and render a BEV sanity view.")
-    parser.add_argument("--sequence", type=str, required=True, help="Path to a sequence root, e.g. dataset/Town01/route_0/day_clear")
+    parser.add_argument("--sequence", type=str, required=True, help="Path to a sequence root, e.g. dataset/Town01/route_0/conditions/day_clear")
     parser.add_argument("--camera", type=str, default="rgb_left", help="Camera name as used in calibration.json / directory name")
     parser.add_argument("--frames", type=int, nargs="+", default=None, help="Explicit list of frame ids to render")
     parser.add_argument("--num-samples", type=int, default=None, help="Evenly-spaced number of frames to sample across the sequence")

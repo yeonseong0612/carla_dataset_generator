@@ -5,7 +5,14 @@ import math
 
 
 class MetadataWriter:
-    def __init__(self, sequence_root, map_name, sequence_id, cfg, route_id=None, condition=None, spawn_info=None):
+    def __init__(self, sequence_root, map_name, sequence_id, cfg, route_id=None, condition=None, spawn_info=None, sequence_extra=None):
+        """
+        condition: legacy per-weather sequences only. Canonical geometry
+        sequences leave it None and describe their weather relationship via
+        sequence_extra (town, geometry_source_condition, conditions, ...),
+        which is merged into sequence.json as top-level fields.
+        """
+
         self.sequence_root = os.path.abspath(sequence_root)
 
         self.map_name = map_name
@@ -15,6 +22,7 @@ class MetadataWriter:
         self.cfg = cfg
         
         self.spawn_info = spawn_info
+        self.sequence_extra = sequence_extra
 
         self.num_frames = 0
 
@@ -163,7 +171,6 @@ class MetadataWriter:
             "map": self.map_name,
             "sequence_id": self.sequence_id,
             "route_id": self.route_id,
-            "condition": self.condition,
 
             "fps": self.cfg.SIMULATION.FPS,
 
@@ -193,6 +200,12 @@ class MetadataWriter:
                 "angles": "degrees",
             },
         }
+
+        if self.condition is not None:
+            data["condition"] = self.condition
+
+        if self.sequence_extra:
+            data.update(self.sequence_extra)
 
         with open(self.sequence_path, "w", encoding="utf-8") as file:
             json.dump(data, file, indent=2)

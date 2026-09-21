@@ -19,7 +19,10 @@ Test flow
 14. Validate saved dataset
 15. Clean up all CARLA actors
 
-This script is NOT the final dataset generator.
+This script is NOT the final dataset generator. It deliberately writes one
+flat single-sequence directory (Collector legacy `sequence_root=` mode,
+outputs/full_pipeline_test/...), not the production paired
+geometry/ + conditions/ layout produced by collect_dataset.py.
 It is a small integration test before collect_dataset.py.
 """
 

@@ -46,6 +46,7 @@ sys.path.insert(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
 )
 
+from src.data.layout import resolve_geometry_root  # noqa: E402
 from scripts.tools.visualize_annotations import (
     CameraProjector,
     discover_available_frames,
@@ -90,7 +91,7 @@ EMPTY_ANNOTATION = {"objects": []}
 # ------------------------------------------------------------------
 
 def load_depth(sequence_root, frame_id):
-    path = os.path.join(sequence_root, "depth", f"{frame_id:06d}.npy")
+    path = os.path.join(resolve_geometry_root(sequence_root), "depth", f"{frame_id:06d}.npy")
 
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -99,7 +100,7 @@ def load_depth(sequence_root, frame_id):
 
 
 def load_semantic(sequence_root, frame_id):
-    path = os.path.join(sequence_root, "semantic", f"{frame_id:06d}.npy")
+    path = os.path.join(resolve_geometry_root(sequence_root), "semantic", f"{frame_id:06d}.npy")
 
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -108,7 +109,7 @@ def load_semantic(sequence_root, frame_id):
 
 
 def flow_path(sequence_root, frame_id):
-    return os.path.join(sequence_root, "optical_flow", f"{frame_id:06d}.npy")
+    return os.path.join(resolve_geometry_root(sequence_root), "optical_flow", f"{frame_id:06d}.npy")
 
 
 def check_frame_files(sequence_root, frame_id, camera_name, require_labels):
@@ -116,17 +117,17 @@ def check_frame_files(sequence_root, frame_id, camera_name, require_labels):
 
     required = {
         camera_name: os.path.join(sequence_root, camera_name, f"{frame_name}.png"),
-        "depth": os.path.join(sequence_root, "depth", f"{frame_name}.npy"),
-        "optical_flow": os.path.join(sequence_root, "optical_flow", f"{frame_name}.npy"),
-        "semantic": os.path.join(sequence_root, "semantic", f"{frame_name}.npy"),
-        "lidar": os.path.join(sequence_root, "lidar", f"{frame_name}.npy"),
+        "depth": os.path.join(resolve_geometry_root(sequence_root), "depth", f"{frame_name}.npy"),
+        "optical_flow": os.path.join(resolve_geometry_root(sequence_root), "optical_flow", f"{frame_name}.npy"),
+        "semantic": os.path.join(resolve_geometry_root(sequence_root), "semantic", f"{frame_name}.npy"),
+        "lidar": os.path.join(resolve_geometry_root(sequence_root), "lidar", f"{frame_name}.npy"),
     }
 
     for sensor_name in RADAR_SENSOR_NAMES:
-        required[sensor_name] = os.path.join(sequence_root, sensor_name, f"{frame_name}.npy")
+        required[sensor_name] = os.path.join(resolve_geometry_root(sequence_root), sensor_name, f"{frame_name}.npy")
 
     if require_labels:
-        required["labels/object_3d"] = os.path.join(sequence_root, "labels", "object_3d", f"{frame_name}.json")
+        required["labels/object_3d"] = os.path.join(resolve_geometry_root(sequence_root), "labels", "object_3d", f"{frame_name}.json")
 
     missing = [name for name, path in required.items() if not os.path.isfile(path)]
 
@@ -305,7 +306,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="2x3 grid: RGB | Depth | Optical Flow / Semantic | LiDAR BEV | Multi-Radar BEV."
     )
-    parser.add_argument("--sequence", type=str, required=True, help="Path to a sequence root, e.g. outputs/town10hd_multiradar_density_validation/Town10/route_0/day_clear")
+    parser.add_argument("--sequence", type=str, required=True, help="Path to a sequence root, e.g. outputs/town10hd_multiradar_density_validation/Town10/route_0/conditions/day_clear")
     parser.add_argument("--camera", type=str, default="rgb_left", help="Camera name as used in calibration.json / directory name")
     parser.add_argument("--frames", type=int, nargs="+", default=None, help="Explicit list of frame ids to render")
     parser.add_argument("--num-samples", type=int, default=None, help="Evenly-spaced number of frames to sample across the sequence")

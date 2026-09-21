@@ -64,6 +64,7 @@ sys.path.insert(0, str(CARLA_PYTHONAPI))
 
 import carla  # noqa: E402
 
+from src.data.layout import resolve_geometry_root, route_root_of  # noqa: E402
 from CFG.config import cfg  # noqa: E402
 from scripts.tools.validate_frame_object_gamma import (  # noqa: E402
     load_frame_object_counts,
@@ -124,6 +125,7 @@ def run_collection_with_log(town, route_id, condition, max_frames, output_root, 
         "--routes", route_id,
         "--conditions", condition,
         "--max-frames", str(max_frames),
+        "--truncate-ok",
         "--output-root", output_root,
         "--background-policy", "canonical",
     ]
@@ -462,7 +464,7 @@ def main():
 
     # ---- frame_object_counts.csv ----
     rows = load_frame_object_counts(seq_dir)
-    shutil.copyfile(os.path.join(seq_dir, "frame_object_counts.csv"), os.path.join(output_dir, "frame_object_counts.csv"))
+    shutil.copyfile(os.path.join(resolve_geometry_root(seq_dir), "frame_object_counts.csv"), os.path.join(output_dir, "frame_object_counts.csv"))
     rows_by_frame = {r["frame_id"]: r for r in rows}
     n_frames = len(rows)
     actual_values = [r["actual"] for r in rows]
@@ -555,7 +557,7 @@ def main():
     lifetime_estimate = estimate_actor_lifetime(population_series, steady_state_start_frame)
 
     # ---- spawn/despawn summary (authoritative totals from collect_dataset.py) ----
-    spawn_summary_path = os.path.join(seq_dir, "canonical_spawn_summary.json")
+    spawn_summary_path = os.path.join(resolve_geometry_root(seq_dir), "canonical_spawn_summary.json")
     spawn_summary = {}
 
     if os.path.isfile(spawn_summary_path):
@@ -673,7 +675,7 @@ def main():
 
     if not args.keep_raw_dataset:
         print(f"[Cleanup] removing raw sensor data at {seq_dir}")
-        shutil.rmtree(seq_dir, ignore_errors=True)
+        shutil.rmtree(route_root_of(seq_dir), ignore_errors=True)
 
 
 if __name__ == "__main__":

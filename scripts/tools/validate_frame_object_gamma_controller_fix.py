@@ -45,6 +45,7 @@ sys.path.insert(0, str(CARLA_PYTHONAPI))
 
 import carla  # noqa: E402
 
+from src.data.layout import resolve_geometry_root, route_root_of  # noqa: E402
 from CFG.config import cfg  # noqa: E402
 from scripts.tools.validate_frame_object_gamma import (  # noqa: E402
     target_integer_pmf,
@@ -87,7 +88,7 @@ BASELINE_LONGRUN_FAILED = {
 # ------------------------------------------------------------------
 
 def load_extended_csv(sequence_dir):
-    path = os.path.join(sequence_dir, "frame_object_counts.csv")
+    path = os.path.join(resolve_geometry_root(sequence_dir), "frame_object_counts.csv")
 
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -381,7 +382,7 @@ def analyze_run(seq_dir, log_path, output_dir, label):
     os.makedirs(output_dir, exist_ok=True)
 
     rows = load_extended_csv(seq_dir)
-    shutil.copyfile(os.path.join(seq_dir, "frame_object_counts.csv"), os.path.join(output_dir, "frame_object_counts.csv"))
+    shutil.copyfile(os.path.join(resolve_geometry_root(seq_dir), "frame_object_counts.csv"), os.path.join(output_dir, "frame_object_counts.csv"))
     rows_by_frame = {r["frame_id"]: r for r in rows}
     n_frames = len(rows)
     actual_values = [r["actual"] for r in rows]
@@ -437,7 +438,7 @@ def analyze_run(seq_dir, log_path, output_dir, label):
     total_pruned = rows[-1]["cumulative_pruned"]
     total_natural_despawn = rows[-1]["cumulative_natural_despawn"]
 
-    spawn_summary_path = os.path.join(seq_dir, "canonical_spawn_summary.json")
+    spawn_summary_path = os.path.join(resolve_geometry_root(seq_dir), "canonical_spawn_summary.json")
     spawn_summary = {}
     if os.path.isfile(spawn_summary_path):
         with open(spawn_summary_path, "r", encoding="utf-8") as f:
@@ -627,7 +628,7 @@ def main():
 
     if not args.keep_raw_dataset:
         print(f"[Cleanup] removing raw sensor data at {seq_dir}")
-        shutil.rmtree(seq_dir, ignore_errors=True)
+        shutil.rmtree(route_root_of(seq_dir), ignore_errors=True)
 
 
 if __name__ == "__main__":

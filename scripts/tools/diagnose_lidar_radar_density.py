@@ -685,7 +685,7 @@ def section_g_visuals(sequence_root, frame_ids, calibration, lidar_density, outp
 
 def main():
     parser = argparse.ArgumentParser(description="LiDAR density + LiDAR-vs-Radar sanity-check diagnostic. Read-only w.r.t. config/collector/annotation/spawn policy.")
-    parser.add_argument("--sequence", type=str, default="outputs/canonical_policy_validation/Town10/route_0/day_clear", help="Already-collected sequence to reuse for Sections D/E/F/G")
+    parser.add_argument("--sequence", type=str, default="outputs/canonical_policy_validation/Town10/route_0/conditions/day_clear", help="Already-collected sequence to reuse for Sections D/E/F/G")
     parser.add_argument("--town", type=str, default="Town10")
     parser.add_argument("--route-id", type=str, default="0")
     parser.add_argument("--live-frames", type=int, default=80, help="Frames captured live for Section C (>=50 required by the task)")

@@ -27,12 +27,35 @@ night_fog
    - Environmental severity is kept identical within each weather type.
    - The main difference between day and night conditions is the
      sun altitude angle and resulting illumination.
+
+4. Wind is intentionally fixed to zero for EVERY condition:
+   - Paired conditions vary weather appearance while preserving geometry as
+     much as possible.
+   - Vegetation animation follows world time, so with wind > 0 the same
+     recorded geometry replayed at a different world time renders
+     foliage/grass at different positions. make_weather() overrides
+     wind_intensity AFTER the preset / custom parameters are built, so it
+     also holds for the CARLA presets (which carry their own wind values).
 '''
 
 import carla
 
 
+# Fixed for all conditions; see policy 4 above.
+WEATHER_WIND_INTENSITY = 0.0
+
+
 def make_weather(condition):
+    weather = _base_weather(condition)
+
+    # Last step on purpose: presets (ClearNoon, MidRainyNoon, ...) define
+    # their own wind_intensity, which must not leak into the paired dataset.
+    weather.wind_intensity = WEATHER_WIND_INTENSITY
+
+    return weather
+
+
+def _base_weather(condition):
     if condition == "day_clear":
         return carla.WeatherParameters.ClearNoon
 
@@ -50,7 +73,7 @@ def make_weather(condition):
             cloudiness=80.0,
             precipitation=0.0,
             precipitation_deposits=0.0,
-            wind_intensity=10.0,
+            wind_intensity=WEATHER_WIND_INTENSITY,
             sun_azimuth_angle=0.0,
             sun_altitude_angle=45.0,
             fog_density=50.0,
@@ -64,7 +87,7 @@ def make_weather(condition):
             cloudiness=80.0,
             precipitation=0.0,
             precipitation_deposits=0.0,
-            wind_intensity=10.0,
+            wind_intensity=WEATHER_WIND_INTENSITY,
             sun_azimuth_angle=0.0,
             sun_altitude_angle=-35.0,
             fog_density=50.0,

@@ -1,33 +1,61 @@
 """
 collect_dataset.py
 
-Final CARLA dataset collection pipeline.
+Paired multi-condition CARLA dataset collection.
+
+Core invariant (see CLAUDE.md): for a fixed (town, route, frame_id) the
+scene geometry is identical across every weather condition; only the
+appearance (RGB) changes.
 
 Pipeline
 --------
 Town
   └─ Route
-      └─ Weather condition
-          ├─ Load route
-          ├─ Spawn ego
-          ├─ Spawn traffic / pedestrians
-          ├─ Spawn sensors
-          ├─ Save calibration
-          ├─ Run RouteController
-          ├─ Collect synchronized sensor data
-          ├─ Save metadata
-          ├─ Save annotations
-          └─ Validate / finalize / cleanup
+      ├─ Stage 1: canonical geometry generation (once per route, day_clear)
+      │     ├─ Spawn ego / traffic / pedestrians, spawn sensors
+      │     ├─ Run RouteController + canonical background traffic
+      │     ├─ Record exact world state every frame   -> geometry/world_state
+      │     ├─ Save shared geometry / GT              -> geometry/
+      │     └─ Save the day_clear RGB from the same run -> conditions/day_clear
+      │
+      └─ Stage 2: deterministic weather replay (every OTHER condition)
+            ├─ Read geometry/world_state (source of truth)
+            ├─ Recreate the recorded actors, set every transform per frame
+            │   (no BasicAgent / RouteController / Traffic Manager / Gamma)
+            ├─ Apply weather, tick, save stereo RGB ONLY -> conditions/<weather>
+            └─ Verify post-tick transforms == recorded transforms
+
+What is stored where
+--------------------
+Canonical geometry and ALL GT sensors are collected ONCE (canonical run,
+day_clear): RGB left/right, depth, semantic, optical flow, LiDAR, 3 radars,
+labels, pose, calibration, world_state. Weather replay regenerates ONLY the
+stereo RGB pair under the recorded geometry -- it does not replay, recreate
+or save depth / semantic / optical flow / LiDAR / radar / labels / pose /
+calibration (the replay sensor rig contains rgb_left + rgb_right only, see
+src/sensors/sensor_rig.py REPLAY_SENSOR_PROFILE). day_clear is never
+replayed: its RGB comes from the canonical run itself.
+
+Wind is intentionally fixed to zero in every condition
+(src/simulation/weather.py): paired conditions vary weather appearance while
+preserving geometry as much as possible.
+
+Output
+------
+dataset/{town}/route_{id}/
+    geometry/                shared GT, stored once (+ COMPLETE)
+    conditions/{weather}/    rgb_left/ rgb_right/ condition.json COMPLETE
+    paired_validation.json   cross-condition correspondence report
+
+Resume: geometry/ (canonical GT + day_clear RGB) and each
+conditions/{weather}/ (that weather's RGB) carry their own COMPLETE marker; a
+re-run replays only the missing weathers (src/data/resume_plan.py).
 
 The script assumes:
-- src.route
-- src.controller
-- src.weather
-- src.sensor_rig
-- src.collector
-- src.calibration
-- src.utils.metadata
-- src.annotation
+- src.navigation.route / controller
+- src.simulation.weather / replay / canonical_traffic
+- src.sensors.sensor_rig
+- src.data.collector / calibration / metadata / annotation / world_state
 are already implemented.
 """
 
@@ -101,12 +129,42 @@ from src.simulation.canonical_traffic import (
     scale_initial_category_counts,
 )
 
-from src.sensors.sensor_rig import SensorRig
+from src.sensors.sensor_rig import (
+    CANONICAL_SENSOR_PROFILE,
+    REPLAY_SENSOR_PROFILE,
+    SensorRig,
+)
 from src.data.collector import Collector
-from src.data.calibration import save_calibration
+from src.data.calibration import build_calibration, save_calibration
 from src.data.metadata import MetadataWriter
 from src.data.annotation import AnnotationWriter
-from src.simulation.weather import apply_weather
+from src.data.layout import (
+    GEOMETRY_SENSOR_EXTENSIONS,
+    clear_complete,
+    condition_dir,
+    geometry_dir,
+    is_complete,
+    mark_complete,
+    route_root,
+)
+from src.data.paired_validation import (
+    calibration_tolerance,
+    compare_calibration,
+    validate_route,
+)
+from src.data.resume_plan import plan_route_work
+from src.data.world_state import (
+    TrafficLightRecorder,
+    WorldStateReader,
+    WorldStateRecorder,
+)
+from src.simulation.replay import (
+    DEFAULT_POSITION_TOLERANCE_M,
+    DEFAULT_ROTATION_TOLERANCE_DEG,
+    WorldStateReplayer,
+    weather_to_dict,
+)
+from src.simulation.weather import WEATHER_WIND_INTENSITY, apply_weather
 
 
 # ============================================================
@@ -141,7 +199,9 @@ def parse_args():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Collect synchronized CARLA dataset sequences."
+            "Collect paired multi-condition CARLA dataset: one canonical "
+            "geometry sequence per (town, route), replayed under every "
+            "weather condition."
         )
     )
 
@@ -170,8 +230,10 @@ def parse_args():
         nargs="+",
         default=None,
         help=(
-            "Weather conditions. "
-            "If omitted, cfg.WEATHER.CONDITIONS is used."
+            "Weather conditions to render. "
+            "If omitted, cfg.WEATHER.CONDITIONS is used. The canonical "
+            "condition (cfg.WEATHER.DEFAULT, day_clear) is always rendered "
+            "as part of geometry generation."
         ),
     )
 
@@ -191,21 +253,61 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--truncate-ok",
+        action="store_true",
+        help=(
+            "Treat --max-frames as an intended cap (smoke tests): reaching "
+            "it finalizes a truncated canonical sequence instead of failing."
+        ),
+    )
+
+    parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite existing sequences.",
+        help=(
+            "Delete the selected routes' existing output (geometry AND every "
+            "condition) and regenerate the whole route from scratch. To "
+            "re-render only some weather conditions without touching "
+            "geometry use --rerender-conditions."
+        ),
+    )
+
+    parser.add_argument(
+        "--rerender-conditions",
+        nargs="+",
+        default=None,
+        help=(
+            "Re-render these weather conditions' RGB by replaying the "
+            "existing canonical geometry (geometry is never deleted or "
+            "regenerated). The canonical source condition (day_clear) cannot "
+            "be re-rendered this way; use --overwrite."
+        ),
+    )
+
+    parser.add_argument(
+        "--replay-position-tolerance",
+        type=float,
+        default=DEFAULT_POSITION_TOLERANCE_M,
+        help="Max post-tick position error (m) for replay verification.",
+    )
+
+    parser.add_argument(
+        "--replay-rotation-tolerance",
+        type=float,
+        default=DEFAULT_ROTATION_TOLERANCE_DEG,
+        help="Max post-tick rotation error (deg) for replay verification.",
     )
 
     parser.add_argument(
         "--no-traffic",
         action="store_true",
-        help="Disable background traffic.",
+        help="Disable background traffic (canonical run).",
     )
 
     parser.add_argument(
         "--no-pedestrians",
         action="store_true",
-        help="Disable pedestrians.",
+        help="Disable pedestrians (canonical run).",
     )
 
     parser.add_argument(
@@ -214,13 +316,14 @@ def parse_args():
         default="canonical",
         choices=["canonical", "dynamic"],
         help=(
-            "Background traffic maintenance policy. 'canonical' (default): "
-            "actors are only ever spawned in a buffer zone ahead of the "
-            "visible sensor ROI, never inside it (see "
+            "Background traffic maintenance policy of the canonical run. "
+            "'canonical' (default): actors are only ever spawned in a buffer "
+            "zone ahead of the visible sensor ROI, never inside it (see "
             "src/simulation/canonical_traffic.py). 'dynamic': the earlier "
             "Phase 2/2.5 per-bin Gamma-deficit replenishment "
             "(src/simulation/spawn_policy.py DynamicSpawnManager), kept "
-            "for reference/comparison, not the production default."
+            "for reference/comparison, not the production default. Replay "
+            "never runs either policy."
         ),
     )
 
@@ -265,19 +368,6 @@ def resolve_carla_map_name(xml_path):
 
     return next(iter(town_names))
 
-
-def sequence_root(
-    output_root,
-    town,
-    route_id,
-    condition,
-):
-    return os.path.join(
-        output_root,
-        town,
-        f"route_{route_id}",
-        condition,
-    )
 
 
 def get_sensor_actors(rig):
@@ -394,10 +484,15 @@ def count_csv_rows(path):
     )
 
 
-def validate_sequence(
-    root,
+def validate_geometry(
+    geometry_root,
+    condition_root,
     expected_frames,
 ):
+    """
+    Structural validation of a freshly generated canonical run: shared
+    geometry files under geometry_root plus the source condition's RGB.
+    """
     errors = []
 
     # --------------------------------------------------------
@@ -407,14 +502,16 @@ def validate_sequence(
     required_files = [
         "calibration.json",
         "sequence.json",
+        "actors.json",
         "timestamps.csv",
         "ego_state.csv",
+        os.path.join("pose", "poses.csv"),
     ]
 
     for name in required_files:
 
         path = os.path.join(
-            root,
+            geometry_root,
             name,
         )
 
@@ -425,45 +522,26 @@ def validate_sequence(
                 f"Missing: {path}"
             )
 
-    pose_path = os.path.join(
-        root,
-        "pose",
-        "poses.csv",
-    )
-
-    for path in [
-        pose_path,
-    ]:
-        if not os.path.isfile(path):
-            errors.append(
-                f"Missing: {path}"
-            )
-
     # --------------------------------------------------------
-    # Sensor file counts
+    # Per-frame file counts
     # --------------------------------------------------------
 
     file_checks = {
-        "rgb_left": ".png",
-        "rgb_right": ".png",
-        "depth": ".npy",
-        "optical_flow": ".npy",
-        "semantic": ".npy",
-        "lidar": ".npy",
-        "radar": ".npy",
-        "radar_front_left": ".npy",
-        "radar_front_right": ".npy",
+        os.path.join(geometry_root, "world_state"): ".json",
+        os.path.join(geometry_root, "labels", "object_3d"): ".json",
+        os.path.join(condition_root, "rgb_left"): ".png",
+        os.path.join(condition_root, "rgb_right"): ".png",
     }
+
+    for name, extension in GEOMETRY_SENSOR_EXTENSIONS.items():
+        file_checks[os.path.join(geometry_root, name)] = extension
 
     for directory, extension in (
         file_checks.items()
     ):
 
         count = count_files(
-            os.path.join(
-                root,
-                directory,
-            ),
+            directory,
             extension,
         )
 
@@ -479,26 +557,11 @@ def validate_sequence(
     # CSV counts
     # --------------------------------------------------------
 
-    csv_paths = {
-        "timestamps":
-            os.path.join(
-                root,
-                "timestamps.csv",
-            ),
-
-        "ego_state":
-            os.path.join(
-                root,
-                "ego_state.csv",
-            ),
-
-        "poses":
-            pose_path,
-    }
-
-    for name, path in (
-        csv_paths.items()
-    ):
+    for name, path in {
+        "timestamps": os.path.join(geometry_root, "timestamps.csv"),
+        "ego_state": os.path.join(geometry_root, "ego_state.csv"),
+        "poses": os.path.join(geometry_root, "pose", "poses.csv"),
+    }.items():
 
         count = count_csv_rows(
             path
@@ -569,58 +632,160 @@ def prepare_route(
     )
 
 
+
+
 # ============================================================
-# One sequence
+# Runtime logging (observability only; no behaviour)
 # ============================================================
 
-def collect_sequence(
+def log_world_sensors(world, label):
+    """Print every sensor actually alive in the CARLA world (id / type / parent)."""
+
+    sensors = sorted(
+        world.get_actors().filter("sensor.*"),
+        key=lambda actor: actor.id,
+    )
+
+    print(
+        f"[Sensors:{label}] {len(sensors)} sensor(s) alive in world"
+    )
+
+    for sensor in sensors:
+        print(
+            f"[Sensors:{label}]   id={sensor.id} type={sensor.type_id} "
+            f"parent={sensor.parent.id if sensor.parent is not None else None}"
+        )
+
+
+def log_runtime_weather(world, label):
+    """Print the weather the running world reports (world.get_weather())."""
+
+    weather = world.get_weather()
+
+    print(
+        f"[Weather:{label}] runtime wind_intensity={weather.wind_intensity} "
+        f"cloudiness={weather.cloudiness} precipitation={weather.precipitation} "
+        f"fog_density={weather.fog_density} sun_altitude={weather.sun_altitude_angle}"
+    )
+
+
+# ============================================================
+# Condition / route metadata helpers
+# ============================================================
+
+GEOMETRY_REPLAY_VERSION = 1
+
+
+def write_json(path, data):
+
+    with open(
+        path,
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            data,
+            file,
+            indent=2,
+        )
+
+
+def write_condition_json(
+    cond_dir,
+    condition,
+    source_condition,
+    weather,
+    num_frames,
+    rendered_from,
+    replay_validation=None,
+    calibration_check=None,
+):
+    """
+    Per-condition metadata: weather parameters (incl. the fixed wind), the
+    geometry it was rendered from, frame count and replay validation result.
+
+    rendered_from == "canonical_run": the source condition's RGB, produced by
+        the canonical run itself (not a replay).
+    rendered_from == "replay": RGB-only replay of the recorded geometry; no
+        non-RGB sensor was spawned, replayed or saved.
+    """
+
+    is_replay = rendered_from == "replay"
+
+    write_json(
+        os.path.join(cond_dir, "condition.json"),
+        {
+            "condition": condition,
+            "weather_parameters": weather_to_dict(weather),
+            # Wind is intentionally fixed to zero for every condition so
+            # paired conditions vary appearance while preserving geometry.
+            "wind_intensity": float(weather.wind_intensity),
+            "source_geometry": os.path.join("..", "..", "geometry").replace("\\", "/"),
+            "geometry_source_condition": source_condition,
+            "geometry_replay_version": GEOMETRY_REPLAY_VERSION,
+            "rendered_from": rendered_from,
+            "rendered_from_canonical_geometry": True,
+            "rgb_only_replay": is_replay,
+            "sensors_saved": list(REPLAY_SENSOR_PROFILE),
+            "num_frames": num_frames,
+            "replay_validation": replay_validation,
+            "calibration_check": calibration_check,
+        },
+    )
+
+
+def update_sequence_conditions(geometry_root, conditions):
+    """Keep geometry/sequence.json's "conditions" equal to what is complete."""
+
+    path = os.path.join(geometry_root, "sequence.json")
+
+    with open(path, "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    data["conditions"] = list(conditions)
+
+    write_json(path, data)
+
+
+# ============================================================
+# Stage 1: canonical geometry generation
+# ============================================================
+
+def generate_canonical_geometry(
     world,
     client,
     traffic_manager,
     town,
     route_id,
     dense_route,
-    condition,
-    output_root,
+    source_condition,
+    planned_conditions,
+    route_path,
     max_frames,
-    overwrite=False,
+    truncate_ok=False,
     no_traffic=False,
     no_pedestrians=False,
     background_policy="canonical",
 ):
+    """
+    Run the production driving + traffic simulation ONCE for this
+    (town, route) under source_condition, recording:
 
-    root = sequence_root(
-        output_root,
-        town,
-        route_id,
-        condition,
-    )
+        geometry/   calibration, labels, depth/flow/semantic/lidar/radar,
+                    ego pose/state, actors.json + world_state/ (replay source)
+        conditions/<source_condition>/   RGB from this same run
+    """
 
-    # --------------------------------------------------------
-    # Existing sequence handling
-    # --------------------------------------------------------
-
-    if os.path.exists(
-        root
-    ):
-
-        if overwrite:
-            shutil.rmtree(
-                root
-            )
-
-        else:
-            print(
-                f"[Skip] Exists: "
-                f"{root}"
-            )
-            return {
-                "status": "skipped",
-                "frames": 0,
-            }
+    geometry_root = geometry_dir(route_path)
+    source_dir = condition_dir(route_path, source_condition)
 
     os.makedirs(
-        root,
+        geometry_root,
+        exist_ok=True,
+    )
+
+    os.makedirs(
+        source_dir,
         exist_ok=True,
     )
 
@@ -629,6 +794,7 @@ def collect_sequence(
 
     collector = None
     metadata = None
+    world_state_recorder = None
 
     traffic_actors = {}
     walkers = []
@@ -640,6 +806,7 @@ def collect_sequence(
     frame_object_csv_writer = None
 
     saved_frames = 0
+    truncated = False
 
     sequence_start = time.time()
 
@@ -650,16 +817,19 @@ def collect_sequence(
             "========================================"
         )
         print(
+            "Stage 1   : canonical geometry"
+        )
+        print(
             f"Town      : {town}"
         )
         print(
             f"Route     : {route_id}"
         )
         print(
-            f"Condition : {condition}"
+            f"Condition : {source_condition}"
         )
         print(
-            f"Output    : {root}"
+            f"Output    : {route_path}"
         )
         print(
             "========================================"
@@ -669,9 +839,9 @@ def collect_sequence(
         # Weather
         # ====================================================
 
-        apply_weather(
+        weather = apply_weather(
             world,
-            condition,
+            source_condition,
         )
 
         # ====================================================
@@ -765,6 +935,13 @@ def collect_sequence(
         # src/simulation/canonical_traffic.py)
         # ====================================================
 
+        category_totals = {
+            "vehicle": 0 if no_traffic else cfg.SPAWN.N_VEHICLES,
+            "motorcyclist": 0 if no_traffic else cfg.SPAWN.N_MOTORCYCLES,
+            "cyclist": 0 if no_traffic else cfg.SPAWN.N_BICYCLES,
+            "pedestrian": 0 if no_pedestrians else cfg.SPAWN.N_PEDESTRIANS,
+        }
+
         if background_policy == "dynamic":
             spawn_manager = DynamicSpawnManager(
                 world,
@@ -773,12 +950,7 @@ def collect_sequence(
                 traffic_manager,
                 cfg,
                 spawn_result["rng"],
-                category_totals={
-                    "vehicle": 0 if no_traffic else cfg.SPAWN.N_VEHICLES,
-                    "motorcyclist": 0 if no_traffic else cfg.SPAWN.N_MOTORCYCLES,
-                    "cyclist": 0 if no_traffic else cfg.SPAWN.N_BICYCLES,
-                    "pedestrian": 0 if no_pedestrians else cfg.SPAWN.N_PEDESTRIANS,
-                },
+                category_totals=category_totals,
             )
         else:
             spawn_manager = CanonicalBackgroundTraffic(
@@ -788,12 +960,7 @@ def collect_sequence(
                 traffic_manager,
                 cfg,
                 spawn_result["rng"],
-                category_totals={
-                    "vehicle": 0 if no_traffic else cfg.SPAWN.N_VEHICLES,
-                    "motorcyclist": 0 if no_traffic else cfg.SPAWN.N_MOTORCYCLES,
-                    "cyclist": 0 if no_traffic else cfg.SPAWN.N_BICYCLES,
-                    "pedestrian": 0 if no_pedestrians else cfg.SPAWN.N_PEDESTRIANS,
-                },
+                category_totals=category_totals,
             )
 
         spawn_manager.register_initial_actors(spawn_result)
@@ -814,7 +981,9 @@ def collect_sequence(
             world,
             ego,
             cfg,
-        ).spawn()
+        ).spawn(
+            profile="canonical"
+        )
 
         print(
             f"[Sensors] "
@@ -843,7 +1012,7 @@ def collect_sequence(
                     sensor_actors
                 ),
                 output_path=os.path.join(
-                    root,
+                    geometry_root,
                     "calibration.json",
                 ),
             )
@@ -864,13 +1033,15 @@ def collect_sequence(
         )
 
         # ====================================================
-        # Collector
+        # Collector: shared geometry -> geometry/, RGB -> source
+        # condition directory
         # ====================================================
 
         collector = Collector(
             rig=rig,
-            sequence_root=root,
             cfg=cfg,
+            geometry_root=geometry_root,
+            condition_root=source_dir,
             timeout=(
                 COLLECTOR_TIMEOUT
             ),
@@ -880,19 +1051,41 @@ def collect_sequence(
         # Metadata
         # ====================================================
 
+        sequence_extra = {
+            "town": town,
+            "geometry_source_condition": source_condition,
+            "geometry_replay_version": GEOMETRY_REPLAY_VERSION,
+            "conditions": list(planned_conditions),
+            "truncated": False,
+            # Canonical GT is collected once and shared by every weather;
+            # replay only re-renders the stereo RGB pair.
+            "shared_geometry": True,
+            "canonical_source_weather": source_condition,
+            "canonical_gt_modalities": list(CANONICAL_SENSOR_PROFILE) + [
+                "labels", "pose", "calibration", "world_state",
+            ],
+            "replay_modalities": list(REPLAY_SENSOR_PROFILE),
+            "wind_intensity": WEATHER_WIND_INTENSITY,
+            "actors": "actors.json",
+            "world_state": "world_state/",
+            "canonical_spawn_summary": (
+                "canonical_spawn_summary.json"
+                if background_policy == "canonical" else None
+            ),
+        }
+
         metadata = MetadataWriter(
-            sequence_root=root,
+            sequence_root=geometry_root,
             map_name=(
                 world.get_map().name
             ),
             sequence_id=(
                 f"{town}_"
-                f"route_{route_id}_"
-                f"{condition}"
+                f"route_{route_id}"
             ),
             cfg=cfg,
             route_id=route_id,
-            condition=condition,
+            sequence_extra=sequence_extra,
             spawn_info={
                 "background_policy": background_policy,
                 "initial_frame_object_target": (
@@ -917,15 +1110,26 @@ def collect_sequence(
         )
 
         # ====================================================
-        # Annotation
+        # World-state recording (the replay source of truth) +
+        # annotation (labels reference the persistent logical ids)
         # ====================================================
+
+        world_state_recorder = WorldStateRecorder(
+            geometry_root,
+            traffic_light_recorder=TrafficLightRecorder(
+                world
+            ),
+        )
 
         annotation_writer = (
             AnnotationWriter(
-                root,
+                geometry_root,
                 cfg,
                 ego=ego,
                 left_camera_actor=rig.get_sensor("rgb_left"),
+                logical_id_resolver=(
+                    world_state_recorder.logical_id_for
+                ),
             )
         )
 
@@ -937,7 +1141,7 @@ def collect_sequence(
 
         if background_policy == "canonical":
             frame_object_csv_file = open(
-                os.path.join(root, "frame_object_counts.csv"),
+                os.path.join(geometry_root, "frame_object_counts.csv"),
                 "w",
                 newline="",
                 encoding="utf-8",
@@ -964,6 +1168,9 @@ def collect_sequence(
             "clear_queues",
         ):
             rig.clear_queues()
+
+        log_world_sensors(world, f"canonical:{source_condition}")
+        log_runtime_weather(world, f"canonical:{source_condition}")
 
         # ====================================================
         # Main loop
@@ -1069,6 +1276,22 @@ def collect_sequence(
             )
 
             # ------------------------------------------------
+            # World state (exact scene of THIS frame, recorded
+            # before the spawn manager below mutates the actor
+            # set and before annotation so labels can reference
+            # logical ids)
+            # ------------------------------------------------
+
+            world_state_recorder.record_frame(
+                local_frame_id,
+                carla_frame,
+                timestamp,
+                snapshot,
+                ego,
+                spawn_manager.managed_actors,
+            )
+
+            # ------------------------------------------------
             # Annotation
             # ------------------------------------------------
 
@@ -1157,6 +1380,7 @@ def collect_sequence(
             ):
                 collector.flush()
                 metadata.flush()
+                world_state_recorder.flush()
 
                 if frame_object_csv_file is not None:
                     frame_object_csv_file.flush()
@@ -1223,7 +1447,7 @@ def collect_sequence(
                 raise RuntimeError(
                     "Vehicle stuck: "
                     f"route={route_id}, "
-                    f"condition={condition}, "
+                    f"condition={source_condition}, "
                     f"progress="
                     f"{route_status.get('progress', 0.0):.2f}%, "
                     f"index="
@@ -1232,10 +1456,19 @@ def collect_sequence(
 
         else:
 
-            raise RuntimeError(
-                f"Maximum frame count "
-                f"{max_frames} reached "
-                "before route completion."
+            if not truncate_ok:
+                raise RuntimeError(
+                    f"Maximum frame count "
+                    f"{max_frames} reached "
+                    "before route completion."
+                )
+
+            truncated = True
+            sequence_extra["truncated"] = True
+
+            print(
+                f"[Truncated] --truncate-ok: stopping at "
+                f"{saved_frames} frames (route not completed)."
             )
 
         # ====================================================
@@ -1243,6 +1476,8 @@ def collect_sequence(
         # ====================================================
 
         collector.flush()
+
+        world_state_recorder.finalize()
 
         metadata.finalize()
         metadata = None
@@ -1254,8 +1489,9 @@ def collect_sequence(
         # Validation
         # ====================================================
 
-        errors = validate_sequence(
-            root,
+        errors = validate_geometry(
+            geometry_root,
+            source_dir,
             saved_frames,
         )
 
@@ -1276,7 +1512,7 @@ def collect_sequence(
                 )
 
             raise RuntimeError(
-                "Sequence validation failed."
+                "Canonical geometry validation failed."
             )
 
         print(
@@ -1284,16 +1520,37 @@ def collect_sequence(
         )
 
         print(
-            f"[Sequence] "
+            f"[Geometry] "
             f"{saved_frames} frames, "
             f"{elapsed:.1f} sec"
+        )
+
+        # The source condition's RGB came from this very run, so its
+        # frames correspond to geometry by construction.
+        write_condition_json(
+            source_dir,
+            source_condition,
+            source_condition,
+            weather,
+            saved_frames,
+            rendered_from="canonical_run",
+        )
+
+        mark_complete(
+            geometry_root,
+            {"num_frames": saved_frames, "truncated": truncated},
+        )
+
+        mark_complete(
+            source_dir,
+            {"num_frames": saved_frames, "rendered_from": "canonical_run"},
         )
 
         return {
             "status": "completed",
             "frames": saved_frames,
             "elapsed": elapsed,
-            "root": root,
+            "root": route_path,
         }
 
     # ========================================================
@@ -1310,6 +1567,16 @@ def collect_sequence(
                 print(
                     "[Cleanup] "
                     f"metadata: {exc}"
+                )
+
+        if world_state_recorder is not None:
+
+            try:
+                world_state_recorder.finalize()
+            except Exception as exc:
+                print(
+                    "[Cleanup] "
+                    f"world_state: {exc}"
                 )
 
         if collector is not None:
@@ -1344,8 +1611,8 @@ def collect_sequence(
 
         # Frame-Level Gamma Object Count Policy: spawn/despawn summary
         # (CLAUDE.md task section 18) -- written here (not the
-        # try-block's normal "Finalize" section) because a 600-frame
-        # validation run legitimately raises "Maximum frame count
+        # try-block's normal "Finalize" section) because a capped
+        # validation run can legitimately raise "Maximum frame count
         # reached before route completion" without ever reaching that
         # section; finally always runs regardless.
         if spawn_manager is not None and hasattr(spawn_manager, "frame_object_schedule"):
@@ -1377,8 +1644,10 @@ def collect_sequence(
                     "updates": spawn_manager.update_index,
                 }
 
-                with open(os.path.join(root, "canonical_spawn_summary.json"), "w", encoding="utf-8") as f:
-                    json.dump(summary, f, indent=2)
+                write_json(
+                    os.path.join(geometry_root, "canonical_spawn_summary.json"),
+                    summary,
+                )
             except Exception as exc:
                 print(
                     "[Cleanup] "
@@ -1447,6 +1716,576 @@ def collect_sequence(
 
 
 # ============================================================
+# Stage 2: deterministic weather replay
+# ============================================================
+
+def replay_condition(
+    world,
+    client,
+    reader,
+    canonical_calibration,
+    condition,
+    source_condition,
+    route_path,
+    position_tolerance_m=DEFAULT_POSITION_TOLERANCE_M,
+    rotation_tolerance_deg=DEFAULT_ROTATION_TOLERANCE_DEG,
+):
+    """
+    Render one weather condition's stereo RGB by replaying the recorded
+    canonical world state. No driving/traffic simulation runs here: every
+    frame the ego and every actor are placed at their recorded transforms
+    (apply_batch_sync, physics off), then only rgb_left / rgb_right are
+    captured and saved.
+
+    Nothing else is replayed or written: depth / semantic / optical flow /
+    LiDAR / radar / labels / pose / calibration are canonical-only GT and are
+    not spawned, captured or saved here. Replay validation is limited to
+    geometry/transform correspondence, RGB presence and calibration
+    reference equality.
+    """
+
+    if condition == source_condition:
+        raise ValueError(
+            f"'{condition}' is the canonical source condition; its RGB comes "
+            f"from the canonical run and must not be replayed."
+        )
+
+    cond_dir = condition_dir(route_path, condition)
+
+    if os.path.exists(cond_dir):
+        shutil.rmtree(cond_dir)
+
+    os.makedirs(cond_dir, exist_ok=True)
+
+    num_frames = len(reader)
+
+    replayer = None
+    rig = None
+    collector = None
+
+    start_time = time.time()
+
+    try:
+
+        print()
+        print(
+            "========================================"
+        )
+        print(
+            "Stage 2   : weather replay"
+        )
+        print(
+            f"Route     : {route_path}"
+        )
+        print(
+            f"Condition : {condition}  ({num_frames} frames)"
+        )
+        print(
+            "========================================"
+        )
+
+        weather = apply_weather(
+            world,
+            condition,
+        )
+
+        first_frame = reader.load_frame(0)
+
+        replayer = WorldStateReplayer(
+            world,
+            client,
+            reader,
+            EGO_BLUEPRINT,
+            position_tolerance_m=position_tolerance_m,
+            rotation_tolerance_deg=rotation_tolerance_deg,
+        )
+
+        replayer.start(first_frame)
+
+        # RGB-only rig: no depth / semantic / flow / lidar / radar sensor
+        # exists during replay (no callbacks, no GPU load, nothing to save).
+        sensor_names = REPLAY_SENSOR_PROFILE
+
+        rig = SensorRig(
+            world,
+            replayer.ego,
+            cfg,
+        ).spawn(
+            profile="replay"
+        )
+
+        # Resolve attached sensor transforms before reading calibration.
+        replayer.apply_frame(first_frame)
+        world.tick()
+
+        log_world_sensors(world, f"replay:{condition}")
+
+        calibration_check = compare_calibration(
+            canonical_calibration,
+            build_calibration(
+                ego_vehicle=replayer.ego,
+                sensor_actors=get_sensor_actors(
+                    rig
+                ),
+            ),
+            tolerance=calibration_tolerance(
+                max(
+                    abs(first_frame["ego"]["transform"][axis])
+                    for axis in ("x", "y", "z")
+                )
+            ),
+        )
+
+        print(
+            "[Calibration] "
+            f"max diff vs geometry = {calibration_check['max_abs_difference']:.3e} "
+            f"({'equal' if calibration_check['equal'] else 'DIFFERENT'})"
+        )
+
+        collector = Collector(
+            rig=rig,
+            cfg=cfg,
+            condition_root=cond_dir,
+            required_sensors=sensor_names,
+            timeout=COLLECTOR_TIMEOUT,
+        )
+
+        # Same warmup as the canonical run (rendering / exposure settle),
+        # holding the frame-0 scene.
+        for _ in range(
+            WARMUP_FRAMES
+        ):
+            replayer.apply_frame(first_frame)
+            world.tick()
+
+        rig.clear_queues()
+
+        log_runtime_weather(world, f"replay:{condition}")
+
+        rgb_dimensions = {}
+
+        saved_frames = 0
+
+        for frame_id in range(
+            num_frames
+        ):
+
+            frame_state = (
+                first_frame
+                if frame_id == 0
+                else reader.load_frame(frame_id)
+            )
+
+            replayer.apply_frame(
+                frame_state
+            )
+
+            carla_frame = (
+                world.tick()
+            )
+
+            packet = (
+                collector.collect_frame(
+                    carla_frame
+                )
+            )
+
+            collector.save_frame(
+                frame_id,
+                packet,
+            )
+
+            for name in sensor_names:
+                rgb_dimensions.setdefault(name, set()).add(
+                    (int(packet[name].width), int(packet[name].height))
+                )
+
+            replayer.verify_frame(
+                frame_state
+            )
+
+            saved_frames += 1
+
+            if (
+                frame_id == 0
+                or saved_frames % 100 == 0
+            ):
+                print(
+                    f"[{condition} {saved_frames:06d}/{num_frames:06d}] "
+                    f"ego_pos_err_max="
+                    f"{replayer.ego_errors.position_max:.4f} m "
+                    f"actors={len(replayer.actors)}"
+                )
+
+        replay_validation = replayer.summary()
+
+        replay_validation["rgb_frames_saved"] = min(
+            count_files(os.path.join(cond_dir, "rgb_left"), ".png"),
+            count_files(os.path.join(cond_dir, "rgb_right"), ".png"),
+        )
+
+        replay_validation["rgb_dimensions"] = {
+            name: sorted(dimensions)
+            for name, dimensions in rgb_dimensions.items()
+        }
+
+        if (
+            replay_validation["rgb_frames_saved"] != num_frames
+            or any(len(dimensions) != 1 for dimensions in rgb_dimensions.values())
+        ):
+            replay_validation["passed"] = False
+
+        write_condition_json(
+            cond_dir,
+            condition,
+            source_condition,
+            weather,
+            saved_frames,
+            rendered_from="replay",
+            replay_validation=replay_validation,
+            calibration_check=calibration_check,
+        )
+
+        elapsed = (
+            time.time()
+            - start_time
+        )
+
+        if not replay_validation["passed"] or not calibration_check["equal"]:
+
+            print(
+                "[Replay validation] FAIL"
+            )
+            print(
+                json.dumps(
+                    replay_validation,
+                    indent=2,
+                )
+            )
+
+            raise RuntimeError(
+                f"Replay validation failed for {condition}."
+            )
+
+        print(
+            "[Replay validation] PASS "
+            f"ego_max={replay_validation['ego']['position_max_m']:.4f} m "
+            f"vehicles_max={replay_validation['vehicle_like_actors']['position_max_m']:.4f} m "
+            f"pedestrians_max={replay_validation['pedestrians']['position_max_m']:.4f} m"
+        )
+
+        print(
+            f"[Replay] {condition}: "
+            f"{saved_frames} frames, "
+            f"{elapsed:.1f} sec"
+        )
+
+        mark_complete(
+            cond_dir,
+            {"num_frames": saved_frames, "rendered_from": "replay"},
+        )
+
+        return {
+            "status": "completed",
+            "frames": saved_frames,
+            "elapsed": elapsed,
+        }
+
+    finally:
+
+        if collector is not None:
+
+            try:
+                collector.close()
+            except Exception as exc:
+                print(
+                    "[Cleanup] "
+                    f"collector: {exc}"
+                )
+
+        if rig is not None:
+
+            try:
+                rig.destroy()
+            except Exception as exc:
+                print(
+                    "[Cleanup] "
+                    f"rig: {exc}"
+                )
+
+        if replayer is not None:
+
+            try:
+                replayer.destroy_all()
+            except Exception as exc:
+                print(
+                    "[Cleanup] "
+                    f"replayer: {exc}"
+                )
+
+        try:
+            world.tick()
+        except RuntimeError:
+            pass
+
+
+# ============================================================
+# One route: canonical geometry + all weather renderings
+# ============================================================
+
+def order_conditions(requested, source_condition):
+    """Source condition first (it is rendered by the canonical run)."""
+
+    ordered = [source_condition]
+
+    for condition in requested:
+        if condition not in ordered:
+            ordered.append(condition)
+
+    return ordered
+
+
+def process_route(
+    world,
+    client,
+    traffic_manager,
+    town,
+    route_id,
+    dense_route,
+    conditions,
+    source_condition,
+    output_root,
+    args,
+):
+    """
+    Canonical geometry (+ the source condition's RGB) once, then RGB-only
+    replay of the remaining weathers. What runs is decided by
+    src/data/resume_plan.py plan_route_work():
+
+      * geometry COMPLETE (canonical GT + day_clear RGB) -> never re-collected
+      * COMPLETE weather conditions are skipped
+      * only missing weathers (or --rerender-conditions) are replayed
+      * the source condition (day_clear) is never replayed
+      * --overwrite (or an incomplete geometry) regenerates the whole route
+    """
+
+    route_path = route_root(
+        output_root,
+        town,
+        route_id,
+    )
+
+    geometry_root = geometry_dir(route_path)
+
+    counts = {
+        "geometry_completed": 0,
+        "conditions_completed": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
+
+    plan = plan_route_work(
+        route_path,
+        conditions,
+        source_condition,
+        rerender_conditions=args.rerender_conditions,
+        overwrite=args.overwrite,
+    )
+
+    # --------------------------------------------------------
+    # Stage 1: canonical geometry + source-condition RGB
+    # --------------------------------------------------------
+
+    if plan["run_canonical"]:
+
+        # A partial / stale / overwritten geometry invalidates every
+        # condition that was rendered from it.
+        if plan["delete_route"]:
+            shutil.rmtree(route_path)
+
+        try:
+
+            generate_canonical_geometry(
+                world=world,
+                client=client,
+                traffic_manager=traffic_manager,
+                town=town,
+                route_id=route_id,
+                dense_route=dense_route,
+                source_condition=source_condition,
+                planned_conditions=conditions,
+                route_path=route_path,
+                max_frames=args.max_frames,
+                truncate_ok=args.truncate_ok,
+                no_traffic=args.no_traffic,
+                no_pedestrians=args.no_pedestrians,
+                background_policy=args.background_policy,
+            )
+
+            counts["geometry_completed"] += 1
+            counts["conditions_completed"] += 1
+
+        except Exception as exc:
+
+            counts["failed"] += 1
+
+            print()
+            print(
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            )
+            print(
+                "[CANONICAL GEOMETRY FAILED]"
+            )
+            print(
+                f"Town      : {town}"
+            )
+            print(
+                f"Route     : {route_id}"
+            )
+            print(
+                f"Reason    : {exc}"
+            )
+            print(
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            )
+
+            # No canonical geometry -> nothing to replay for this route.
+            return counts
+
+    else:
+
+        print(
+            f"[Skip] Geometry + {source_condition} RGB complete: {geometry_root}"
+        )
+
+    # --------------------------------------------------------
+    # Stage 2: RGB-only replay of the missing / re-requested weathers
+    # --------------------------------------------------------
+
+    for condition in plan["skip"]:
+
+        counts["skipped"] += 1
+
+        print(
+            f"[Skip] Condition complete: {condition_dir(route_path, condition)}"
+        )
+
+    reader = None
+    canonical_calibration = None
+
+    for condition in plan["replay"]:
+
+        cond_dir = condition_dir(
+            route_path,
+            condition,
+        )
+
+        try:
+
+            if reader is None:
+
+                reader = WorldStateReader(
+                    geometry_root
+                )
+
+                with open(
+                    os.path.join(geometry_root, "calibration.json"),
+                    "r",
+                    encoding="utf-8",
+                ) as file:
+                    canonical_calibration = json.load(file)
+
+            replay_condition(
+                world=world,
+                client=client,
+                reader=reader,
+                canonical_calibration=canonical_calibration,
+                condition=condition,
+                source_condition=source_condition,
+                route_path=route_path,
+                position_tolerance_m=args.replay_position_tolerance,
+                rotation_tolerance_deg=args.replay_rotation_tolerance,
+            )
+
+            counts["conditions_completed"] += 1
+
+        except Exception as exc:
+
+            counts["failed"] += 1
+
+            print()
+            print(
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            )
+            print(
+                "[REPLAY FAILED]"
+            )
+            print(
+                f"Town      : {town}"
+            )
+            print(
+                f"Route     : {route_id}"
+            )
+            print(
+                f"Condition : {condition}"
+            )
+            print(
+                f"Reason    : {exc}"
+            )
+            print(
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            )
+
+            clear_complete(
+                cond_dir
+            )
+
+            continue
+
+    # --------------------------------------------------------
+    # Cross-condition validation over everything now complete
+    # --------------------------------------------------------
+
+    complete_conditions = [
+        condition
+        for condition in conditions
+        if is_complete(condition_dir(route_path, condition))
+    ]
+
+    update_sequence_conditions(
+        geometry_root,
+        complete_conditions,
+    )
+
+    report = validate_route(
+        route_path,
+        complete_conditions,
+        source_condition=source_condition,
+    )
+
+    write_json(
+        os.path.join(route_path, "paired_validation.json"),
+        report,
+    )
+
+    print(
+        f"[Paired validation] {'PASS' if report['passed'] else 'FAIL'} "
+        f"({len(complete_conditions)}/{len(conditions)} conditions, "
+        f"{report.get('num_frames')} frames)"
+    )
+
+    for error in report["errors"]:
+        print(
+            f"    {error}"
+        )
+
+    if not report["passed"]:
+        counts["failed"] += 1
+
+    return counts
+
+
+# ============================================================
 # Main
 # ============================================================
 
@@ -1469,13 +2308,31 @@ def main():
         else [cfg.MAP.NAME]
     )
 
-    conditions = (
+    requested_conditions = (
         args.conditions
         if args.conditions is not None
         else list(
             cfg.WEATHER.CONDITIONS
         )
     )
+
+    source_condition = cfg.WEATHER.DEFAULT
+
+    conditions = order_conditions(
+        requested_conditions,
+        source_condition,
+    )
+
+    if args.rerender_conditions:
+
+        # Fail fast, before any CARLA work: unknown conditions, or the
+        # canonical source condition (its RGB is not produced by replay).
+        plan_route_work(
+            "<validate-only>",
+            conditions,
+            source_condition,
+            rerender_conditions=args.rerender_conditions,
+        )
 
     # --------------------------------------------------------
     # CARLA client
@@ -1494,9 +2351,12 @@ def main():
     original_settings = None
     traffic_manager = None
 
-    completed = 0
-    skipped = 0
-    failed = 0
+    totals = {
+        "geometry_completed": 0,
+        "conditions_completed": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
 
     try:
 
@@ -1587,7 +2447,7 @@ def main():
             )
 
             # =================================================
-            # Traffic manager
+            # Traffic manager (canonical geometry generation only)
             # =================================================
 
             traffic_manager = (
@@ -1647,93 +2507,21 @@ def main():
                     f"{len(dense_route)}"
                 )
 
-                # =============================================
-                # Conditions
-                # =============================================
+                route_counts = process_route(
+                    world=world,
+                    client=client,
+                    traffic_manager=traffic_manager,
+                    town=town,
+                    route_id=route_id,
+                    dense_route=dense_route,
+                    conditions=conditions,
+                    source_condition=source_condition,
+                    output_root=output_root,
+                    args=args,
+                )
 
-                for condition in conditions:
-
-                    try:
-
-                        result = (
-                            collect_sequence(
-                                world=world,
-                                client=client,
-                                traffic_manager=(
-                                    traffic_manager
-                                ),
-                                town=town,
-                                route_id=(
-                                    route_id
-                                ),
-                                dense_route=(
-                                    dense_route
-                                ),
-                                condition=(
-                                    condition
-                                ),
-                                output_root=(
-                                    output_root
-                                ),
-                                max_frames=(
-                                    args.max_frames
-                                ),
-                                overwrite=(
-                                    args.overwrite
-                                ),
-                                no_traffic=(
-                                    args.no_traffic
-                                ),
-                                no_pedestrians=(
-                                    args.no_pedestrians
-                                ),
-                                background_policy=(
-                                    args.background_policy
-                                ),
-                            )
-                        )
-
-                        if (
-                            result["status"]
-                            == "completed"
-                        ):
-                            completed += 1
-
-                        elif (
-                            result["status"]
-                            == "skipped"
-                        ):
-                            skipped += 1
-
-                    except Exception as exc:
-
-                        failed += 1
-
-                        print()
-                        print(
-                            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-                        )
-                        print(
-                            "[SEQUENCE FAILED]"
-                        )
-                        print(
-                            f"Town      : {town}"
-                        )
-                        print(
-                            f"Route     : {route_id}"
-                        )
-                        print(
-                            f"Condition : {condition}"
-                        )
-                        print(
-                            f"Reason    : {exc}"
-                        )
-                        print(
-                            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-                        )
-
-                        # Continue with next sequence.
-                        continue
+                for key, value in route_counts.items():
+                    totals[key] += value
 
             # =================================================
             # Restore town before next map
@@ -1809,19 +2597,23 @@ def main():
     )
 
     print(
-        f"Completed : {completed}"
+        f"Geometry sequences generated : {totals['geometry_completed']}"
     )
 
     print(
-        f"Skipped   : {skipped}"
+        f"Conditions rendered          : {totals['conditions_completed']}"
     )
 
     print(
-        f"Failed    : {failed}"
+        f"Conditions skipped           : {totals['skipped']}"
     )
 
     print(
-        f"Root      : {output_root}"
+        f"Failed                       : {totals['failed']}"
+    )
+
+    print(
+        f"Root                         : {output_root}"
     )
 
     print(

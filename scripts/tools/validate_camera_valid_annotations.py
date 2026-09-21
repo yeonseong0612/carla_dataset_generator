@@ -39,6 +39,7 @@ sys.path.insert(0, str(CARLA_PYTHONAPI))
 
 import carla  # noqa: E402
 
+from src.data.layout import resolve_geometry_root, route_root_of  # noqa: E402
 from CFG.config import cfg  # noqa: E402
 from src.data.projection import CameraProjector  # noqa: E402
 from scripts.tools.validate_frame_object_gamma import sequence_root  # noqa: E402
@@ -67,12 +68,12 @@ VALID_COLOR_BGR = (0, 220, 0)
 # ------------------------------------------------------------------
 
 def load_calibration(sequence_dir):
-    with open(os.path.join(sequence_dir, "calibration.json"), "r", encoding="utf-8") as f:
+    with open(os.path.join(resolve_geometry_root(sequence_dir), "calibration.json"), "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def discover_frames(sequence_dir):
-    paths = sorted(glob.glob(os.path.join(sequence_dir, "labels", "object_3d", "*.json")))
+    paths = sorted(glob.glob(os.path.join(resolve_geometry_root(sequence_dir), "labels", "object_3d", "*.json")))
     frames = []
     for p in paths:
         with open(p, "r", encoding="utf-8") as f:
@@ -315,7 +316,7 @@ def main():
 
     if not args.keep_raw_dataset:
         print(f"[Cleanup] removing raw sensor data at {seq_dir}")
-        shutil.rmtree(seq_dir, ignore_errors=True)
+        shutil.rmtree(route_root_of(seq_dir), ignore_errors=True)
 
 
 if __name__ == "__main__":

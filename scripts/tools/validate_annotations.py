@@ -9,14 +9,14 @@ dataset.
 Usage
 -----
     python -m scripts.tools.validate_annotations \
-        --sequence dataset/Town01/route_0/day_clear
+        --sequence dataset/Town01/route_0/conditions/day_clear
 
     python -m scripts.tools.validate_annotations \
-        --sequence dataset/Town01/route_0/day_clear \
+        --sequence dataset/Town01/route_0/conditions/day_clear \
         --start 0 --end 299
 
     python -m scripts.tools.validate_annotations \
-        --sequence dataset/Town01/route_0/day_clear \
+        --sequence dataset/Town01/route_0/conditions/day_clear \
         --frames 0 150 299
 """
 
@@ -32,6 +32,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from src.data.layout import resolve_geometry_root  # noqa: E402
 from scripts.tools.bbox_geometry import BoxGeometryError, local_box_axes
 
 ALLOWED_CATEGORIES = {"vehicle", "pedestrian", "cyclist", "motorcyclist"}
@@ -80,7 +81,7 @@ def is_finite_vec(value, n):
 
 
 def discover_frame_files(sequence_root, start, end, frames):
-    object_dir = os.path.join(sequence_root, "labels", "object_3d")
+    object_dir = os.path.join(resolve_geometry_root(sequence_root), "labels", "object_3d")
 
     if not os.path.isdir(object_dir):
         raise FileNotFoundError(f"labels/object_3d directory not found under {sequence_root}")
@@ -415,7 +416,7 @@ def summarize(frames_checked, objects_checked, issues, object_stats):
 
 def main():
     parser = argparse.ArgumentParser(description="Validate CARLA object_3d annotation JSON files.")
-    parser.add_argument("--sequence", type=str, required=True, help="Path to a sequence root, e.g. dataset/Town01/route_0/day_clear")
+    parser.add_argument("--sequence", type=str, required=True, help="Path to a sequence root, e.g. dataset/Town01/route_0/conditions/day_clear")
     parser.add_argument("--start", type=int, default=None, help="First frame id (inclusive)")
     parser.add_argument("--end", type=int, default=None, help="Last frame id (inclusive)")
     parser.add_argument("--frames", type=int, nargs="+", default=None, help="Explicit list of frame ids to check")

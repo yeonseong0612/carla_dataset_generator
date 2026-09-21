@@ -53,6 +53,7 @@ sys.path.insert(0, str(CARLA_PYTHONAPI))
 
 import carla  # noqa: E402
 
+from src.data.layout import resolve_geometry_root  # noqa: E402
 from CFG.config import cfg  # noqa: E402
 from src.simulation.spawn_policy import (  # noqa: E402
     compute_bin_edges_and_probabilities,
@@ -68,7 +69,7 @@ LANE_HALF_WIDTH_M = 1.75
 # ------------------------------------------------------------------
 
 def load_all_annotations(sequence_root):
-    paths = sorted(glob.glob(os.path.join(sequence_root, "labels", "object_3d", "*.json")))
+    paths = sorted(glob.glob(os.path.join(resolve_geometry_root(sequence_root), "labels", "object_3d", "*.json")))
 
     if not paths:
         raise FileNotFoundError(f"No annotation files under {sequence_root}/labels/object_3d")
@@ -111,7 +112,7 @@ def nearest_same_lane_lead_per_frame(frames):
 
 
 def load_ego_state(sequence_root):
-    path = os.path.join(sequence_root, "ego_state.csv")
+    path = os.path.join(resolve_geometry_root(sequence_root), "ego_state.csv")
 
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -121,7 +122,7 @@ def load_ego_state(sequence_root):
 
 
 def load_poses(sequence_root):
-    path = os.path.join(sequence_root, "pose", "poses.csv")
+    path = os.path.join(resolve_geometry_root(sequence_root), "pose", "poses.csv")
 
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -333,7 +334,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Canonical background-traffic policy validation: Gamma observation-distance histogram + ego mobility + nearest same-lane lead, all read-only from an already-collected dataset sequence."
     )
-    parser.add_argument("--sequence", type=str, required=True, help="Path to a sequence root, e.g. outputs/canonical_policy_validation/Town10/route_0/day_clear")
+    parser.add_argument("--sequence", type=str, required=True, help="Path to a sequence root, e.g. outputs/canonical_policy_validation/Town10/route_0/conditions/day_clear")
     parser.add_argument("--town", type=str, default="Town10", help="Town key for routes/<town>.xml (route_s projection needs a live CARLA connection)")
     parser.add_argument("--route-id", type=str, default="0")
     parser.add_argument("--output-dir", type=str, default="outputs/canonical_policy_validation", help="Where observation_distance_histogram.png is written")

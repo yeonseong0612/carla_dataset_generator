@@ -5,28 +5,31 @@ Synchronized sensor collection and dataset writing for CARLA.
 
 Responsibilities
 ----------------
-1. Wait for all sensors to produce the requested CARLA frame.
+1. Wait for the required sensors to produce the requested CARLA frame.
 2. Convert raw CARLA sensor data to NumPy arrays where necessary.
 3. Save synchronized sensor data to disk.
 
-Expected sequence structure
----------------------------
-sequence_root/
-├─ rgb_left/
-├─ rgb_right/
-├─ depth/
-├─ optical_flow/
-├─ semantic/
-├─ lidar/
-├─ radar/
-├─ radar_front_left/
-└─ radar_front_right/
+Canonical run: full rig -> stereo RGB to the condition directory, every GT
+modality to geometry/. Weather replay: RGB-only rig, condition_root only, so
+nothing but rgb_left / rgb_right can be written.
 
-The sequence_root itself should already represent one unique
-Town / Route / Weather sequence.
+Output layout
+-------------
+Paired route-centric layout (see src/data/layout.py):
+
+    geometry_root/            (shared by every weather condition)
+    +- depth/ optical_flow/ semantic/ lidar/
+    +- radar/ radar_front_left/ radar_front_right/
+
+    condition_root/           (weather-specific)
+    +- rgb_left/
+    +- rgb_right/
+
+Legacy flat mode (sequence_root=...) writes everything into one directory.
 
 Example:
-dataset/Town01/route_00/day_clear/
+dataset/Town01/route_0/geometry/
+dataset/Town01/route_0/conditions/day_clear/
 """
 
 import os
@@ -378,14 +381,20 @@ class Collector:
             radar_front_right
 
     sequence_root:
-        Output directory representing one complete sequence.
+        Legacy flat mode: one directory receiving every modality.
 
-        Example:
+    geometry_root:
+        Directory receiving weather-independent modalities (depth,
+        optical flow, semantic, LiDAR, radar). None disables saving them.
 
-            dataset/
-                Town01/
-                    route_00/
-                        day_clear/
+    condition_root:
+        Directory receiving weather-specific modalities (rgb_left,
+        rgb_right). None disables saving them.
+
+    required_sensors:
+        Sensors that must produce every frame. Defaults to the full rig
+        (canonical run); weather replay passes only rgb_left / rgb_right and
+        no geometry_root, so it can only ever write stereo RGB.
 
     timeout:
         Maximum waiting time for each synchronized frame.
@@ -397,27 +406,52 @@ class Collector:
         "radar_front_right",
     )
 
-    REQUIRED_SENSORS = (
+    RGB_SENSORS = (
         "rgb_left",
         "rgb_right",
+    )
+
+    GEOMETRY_SENSORS = (
         "depth",
         "optical_flow",
         "semantic",
         "lidar",
     ) + RADAR_SENSORS
 
+    REQUIRED_SENSORS = RGB_SENSORS + GEOMETRY_SENSORS
+
     def __init__(
         self,
         rig,
-        sequence_root,
-        cfg,
+        sequence_root=None,
+        cfg=None,
         timeout=10.0,
+        geometry_root=None,
+        condition_root=None,
+        required_sensors=None,
     ):
         self.rig = rig
         self.cfg = cfg
 
-        self.sequence_root = os.path.abspath(
-            sequence_root
+        if sequence_root is not None:
+            if geometry_root is not None or condition_root is not None:
+                raise ValueError(
+                    "Pass either sequence_root (flat) or "
+                    "geometry_root/condition_root, not both."
+                )
+
+            geometry_root = sequence_root
+            condition_root = sequence_root
+
+        self.geometry_root = (
+            os.path.abspath(geometry_root) if geometry_root is not None else None
+        )
+        self.condition_root = (
+            os.path.abspath(condition_root) if condition_root is not None else None
+        )
+
+        self.required_sensors = tuple(
+            required_sensors if required_sensors is not None else self.REQUIRED_SENSORS
         )
 
         self.timeout = float(
@@ -450,7 +484,7 @@ class Collector:
 
         missing = [
             name
-            for name in self.REQUIRED_SENSORS
+            for name in self.required_sensors
             if name not in self.rig.queues
         ]
 
@@ -465,42 +499,30 @@ class Collector:
         """
         Create output directories.
 
-        sequence_root already represents one weather-specific
-        sequence, therefore condition-specific subdirectories
-        are not created here.
+        RGB goes to condition_root, everything else to geometry_root.
         """
 
-        os.makedirs(
-            self.sequence_root,
-            exist_ok=True,
-        )
+        for root, names in (
+            (self.condition_root, self.RGB_SENSORS),
+            (self.geometry_root, self.GEOMETRY_SENSORS),
+        ):
 
-        # ----------------------------------------------------
-        # Sensor directories
-        # ----------------------------------------------------
+            if root is None:
+                continue
 
-        sensor_dirs = (
-            "rgb_left",
-            "rgb_right",
-            "depth",
-            "optical_flow",
-            "semantic",
-            "lidar",
-        ) + self.RADAR_SENSORS
+            for name in names:
 
-        for name in sensor_dirs:
+                path = os.path.join(
+                    root,
+                    name,
+                )
 
-            path = os.path.join(
-                self.sequence_root,
-                name,
-            )
+                os.makedirs(
+                    path,
+                    exist_ok=True,
+                )
 
-            os.makedirs(
-                path,
-                exist_ok=True,
-            )
-
-            self.dirs[name] = path
+                self.dirs[name] = path
 
 
     # ========================================================
@@ -520,7 +542,7 @@ class Collector:
 
         packet = {}
 
-        for name in self.REQUIRED_SENSORS:
+        for name in self.required_sensors:
 
             sensor_queue = (
                 self.rig.queues[name]
@@ -582,32 +604,50 @@ class Collector:
     ):
         """
         Save one synchronized sensor packet.
+
+        RGB is written when condition_root is set; the geometry
+        modalities are written when geometry_root is set (the packet must
+        then contain every geometry sensor).
         """
 
         frame_name = (
             f"{int(local_frame_id):06d}"
         )
 
-        # ----------------------------------------------------
-        # RGB
-        # ----------------------------------------------------
+        summary = {
+            "frame_id": int(
+                local_frame_id
+            ),
 
-        packet["rgb_left"].save_to_disk(
-            os.path.join(
-                self.dirs["rgb_left"],
-                f"{frame_name}.png",
-            )
-        )
+            "carla_frame": int(
+                packet["rgb_left"].frame
+            ),
 
-        packet["rgb_right"].save_to_disk(
-            os.path.join(
-                self.dirs["rgb_right"],
-                f"{frame_name}.png",
-            )
-        )
+            "timestamp": float(
+                packet["rgb_left"].timestamp
+            ),
+        }
 
         # ----------------------------------------------------
-        # Geometry / GT conversion
+        # RGB (weather-specific)
+        # ----------------------------------------------------
+
+        if self.condition_root is not None:
+
+            for name in self.RGB_SENSORS:
+
+                packet[name].save_to_disk(
+                    os.path.join(
+                        self.dirs[name],
+                        f"{frame_name}.png",
+                    )
+                )
+
+        if self.geometry_root is None:
+            return summary
+
+        # ----------------------------------------------------
+        # Geometry / GT conversion (shared across weather)
         # ----------------------------------------------------
 
         depth = depth_to_numpy(
@@ -641,37 +681,19 @@ class Collector:
         # Save arrays
         # ----------------------------------------------------
 
-        np.save(
-            os.path.join(
-                self.dirs["depth"],
-                f"{frame_name}.npy",
-            ),
-            depth,
-        )
-
-        np.save(
-            os.path.join(
-                self.dirs["optical_flow"],
-                f"{frame_name}.npy",
-            ),
-            flow,
-        )
-
-        np.save(
-            os.path.join(
-                self.dirs["semantic"],
-                f"{frame_name}.npy",
-            ),
-            semantic,
-        )
-
-        np.save(
-            os.path.join(
-                self.dirs["lidar"],
-                f"{frame_name}.npy",
-            ),
-            lidar,
-        )
+        for name, array in (
+            ("depth", depth),
+            ("optical_flow", flow),
+            ("semantic", semantic),
+            ("lidar", lidar),
+        ):
+            np.save(
+                os.path.join(
+                    self.dirs[name],
+                    f"{frame_name}.npy",
+                ),
+                array,
+            )
 
         for name, radar_array in radar_arrays.items():
             np.save(
@@ -686,19 +708,7 @@ class Collector:
         # Result summary
         # ----------------------------------------------------
 
-        return {
-            "frame_id": int(
-                local_frame_id
-            ),
-
-            "carla_frame": int(
-                packet["rgb_left"].frame
-            ),
-
-            "timestamp": float(
-                packet["rgb_left"].timestamp
-            ),
-
+        summary.update({
             "depth_shape": tuple(
                 depth.shape
             ),
@@ -737,7 +747,9 @@ class Collector:
             "radar_points_merged": int(
                 sum(len(array) for array in radar_arrays.values())
             ),
-        }
+        })
+
+        return summary
 
 
     def collect_and_save(

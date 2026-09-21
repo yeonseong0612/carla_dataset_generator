@@ -34,6 +34,7 @@ sys.path.insert(0, str(CARLA_PYTHONAPI))
 
 import carla  # noqa: E402
 
+from src.data.layout import resolve_geometry_root  # noqa: E402
 from CFG.config import cfg  # noqa: E402
 from src.data.projection import CameraProjector  # noqa: E402
 from scripts.tools.validate_frame_object_gamma import sequence_root  # noqa: E402
@@ -62,7 +63,7 @@ def run_collection_timed(town, route_id, condition, max_frames, output_root, log
 
 def load_frame_object_csv(sequence_dir):
     import csv
-    path = os.path.join(sequence_dir, "frame_object_counts.csv")
+    path = os.path.join(resolve_geometry_root(sequence_dir), "frame_object_counts.csv")
     rows = []
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
@@ -71,7 +72,7 @@ def load_frame_object_csv(sequence_dir):
 
 
 def discover_annotation_frames(sequence_dir):
-    paths = sorted(glob.glob(os.path.join(sequence_dir, "labels", "object_3d", "*.json")))
+    paths = sorted(glob.glob(os.path.join(resolve_geometry_root(sequence_dir), "labels", "object_3d", "*.json")))
     frames = []
     for p in paths:
         with open(p, "r", encoding="utf-8") as f:
@@ -167,7 +168,9 @@ def sensor_sync_check(sequence_dir, expected_frames):
         if ext is None:
             continue
 
-        dir_path = os.path.join(sequence_dir, *name.split("/"))
+        # RGB is per weather condition; everything else lives in geometry/.
+        base_dir = sequence_dir if name.startswith("rgb_") else resolve_geometry_root(sequence_dir)
+        dir_path = os.path.join(base_dir, *name.split("/"))
         files = sorted(glob.glob(os.path.join(dir_path, f"*{ext}")))
         ids = []
         duplicates = []
@@ -195,7 +198,7 @@ def sensor_sync_check(sequence_dir, expected_frames):
 
     # pose/poses.csv row count check
     import csv
-    pose_path = os.path.join(sequence_dir, "pose", "poses.csv")
+    pose_path = os.path.join(resolve_geometry_root(sequence_dir), "pose", "poses.csv")
     if os.path.isfile(pose_path):
         with open(pose_path, newline="", encoding="utf-8") as f:
             pose_rows = list(csv.DictReader(f))
@@ -209,29 +212,37 @@ def sensor_sync_check(sequence_dir, expected_frames):
 # ------------------------------------------------------------------
 
 def directory_structure(sequence_dir, max_entries_per_dir=3):
+    """Shared geometry/ entries, then the condition directory's entries."""
+
     structure = {}
-    for entry in sorted(os.listdir(sequence_dir)):
-        full = os.path.join(sequence_dir, entry)
-        if os.path.isdir(full):
-            children = sorted(os.listdir(full))
-            structure[entry + "/"] = {
-                "count": len(children),
-                "sample": children[:max_entries_per_dir],
-            }
-            # one level deeper for labels/
-            if entry == "labels":
-                for sub in children:
-                    sub_full = os.path.join(full, sub)
-                    if os.path.isdir(sub_full):
-                        sub_children = sorted(os.listdir(sub_full))
-                        structure[f"labels/{sub}/"] = {"count": len(sub_children), "sample": sub_children[:max_entries_per_dir]}
-        else:
-            structure[entry] = {"size_bytes": os.path.getsize(full)}
+    roots = [("", resolve_geometry_root(sequence_dir))]
+
+    if os.path.abspath(sequence_dir) != os.path.abspath(roots[0][1]):
+        roots.append((f"[condition {os.path.basename(sequence_dir)}] ", sequence_dir))
+
+    for prefix, root in roots:
+        for entry in sorted(os.listdir(root)):
+            full = os.path.join(root, entry)
+            if os.path.isdir(full):
+                children = sorted(os.listdir(full))
+                structure[prefix + entry + "/"] = {
+                    "count": len(children),
+                    "sample": children[:max_entries_per_dir],
+                }
+                # one level deeper for labels/
+                if entry == "labels":
+                    for sub in children:
+                        sub_full = os.path.join(full, sub)
+                        if os.path.isdir(sub_full):
+                            sub_children = sorted(os.listdir(sub_full))
+                            structure[f"{prefix}labels/{sub}/"] = {"count": len(sub_children), "sample": sub_children[:max_entries_per_dir]}
+            else:
+                structure[prefix + entry] = {"size_bytes": os.path.getsize(full)}
     return structure
 
 
 def annotation_json_schema(sequence_dir, frame_id=0):
-    path = os.path.join(sequence_dir, "labels", "object_3d", f"{frame_id:06d}.json")
+    path = os.path.join(resolve_geometry_root(sequence_dir), "labels", "object_3d", f"{frame_id:06d}.json")
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -253,7 +264,7 @@ def annotation_json_schema(sequence_dir, frame_id=0):
 
 
 def calibration_schema(sequence_dir):
-    path = os.path.join(sequence_dir, "calibration.json")
+    path = os.path.join(resolve_geometry_root(sequence_dir), "calibration.json")
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -273,7 +284,7 @@ def pose_navigation_schema(sequence_dir):
     import csv
 
     result = {}
-    pose_path = os.path.join(sequence_dir, "pose", "poses.csv")
+    pose_path = os.path.join(resolve_geometry_root(sequence_dir), "pose", "poses.csv")
     if os.path.isfile(pose_path):
         with open(pose_path, newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
@@ -281,7 +292,7 @@ def pose_navigation_schema(sequence_dir):
             first_row = next(reader, None)
         result["pose/poses.csv"] = {"columns": header, "first_row_example": first_row}
 
-    ego_state_path = os.path.join(sequence_dir, "ego_state.csv")
+    ego_state_path = os.path.join(resolve_geometry_root(sequence_dir), "ego_state.csv")
     if os.path.isfile(ego_state_path):
         with open(ego_state_path, newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
@@ -296,7 +307,9 @@ def naming_consistency_check(sequence_dir):
     for name, ext in SENSOR_DIR_EXT.items():
         if ext is None:
             continue
-        dir_path = os.path.join(sequence_dir, *name.split("/"))
+        # RGB is per weather condition; everything else lives in geometry/.
+        base_dir = sequence_dir if name.startswith("rgb_") else resolve_geometry_root(sequence_dir)
+        dir_path = os.path.join(base_dir, *name.split("/"))
         files = sorted(os.listdir(dir_path)) if os.path.isdir(dir_path) else []
         if not files:
             continue
@@ -325,15 +338,19 @@ def dir_size_bytes(path):
 def storage_report(sequence_dir, n_frames):
     per_sensor = {}
     for name in ("rgb_left", "rgb_right", "depth", "optical_flow", "semantic", "lidar", "radar"):
-        p = os.path.join(sequence_dir, name)
+        p = os.path.join(sequence_dir if name.startswith("rgb_") else resolve_geometry_root(sequence_dir), name)
         if os.path.isdir(p):
             per_sensor[name] = dir_size_bytes(p)
 
-    labels_dir = os.path.join(sequence_dir, "labels")
+    labels_dir = os.path.join(resolve_geometry_root(sequence_dir), "labels")
     if os.path.isdir(labels_dir):
         per_sensor["labels"] = dir_size_bytes(labels_dir)
 
-    total_bytes = dir_size_bytes(sequence_dir)
+    geometry_root = resolve_geometry_root(sequence_dir)
+    total_bytes = dir_size_bytes(geometry_root)
+
+    if os.path.abspath(sequence_dir) != os.path.abspath(geometry_root):
+        total_bytes += dir_size_bytes(sequence_dir)
 
     return {
         "total_bytes": total_bytes,
@@ -395,7 +412,7 @@ def main():
     ann_stats = annotation_stats(annotation_frames)
     gamma_pop_stats = gamma_and_population_stats(frame_rows)
 
-    spawn_summary_path = os.path.join(seq_dir, "canonical_spawn_summary.json")
+    spawn_summary_path = os.path.join(resolve_geometry_root(seq_dir), "canonical_spawn_summary.json")
     with open(spawn_summary_path, "r", encoding="utf-8") as f:
         spawn_summary = json.load(f)
 

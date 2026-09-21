@@ -53,6 +53,7 @@ sys.path.insert(0, str(CARLA_PYTHONAPI))
 
 import carla  # noqa: E402
 
+from src.data.layout import resolve_geometry_root  # noqa: E402
 from CFG.config import cfg  # noqa: E402
 from src.simulation.spawn_policy import gamma_cdf_numeric  # noqa: E402
 from scripts.tools.analyze_canonical_policy import (  # noqa: E402
@@ -88,6 +89,7 @@ def run_collection(town, route_id, condition, max_frames, output_root, overwrite
         "--routes", route_id,
         "--conditions", condition,
         "--max-frames", str(max_frames),
+        "--truncate-ok",
         "--output-root", output_root,
         "--background-policy", "canonical",
     ]
@@ -104,7 +106,13 @@ def run_collection(town, route_id, condition, max_frames, output_root, overwrite
 
 
 def sequence_root(output_root, town, route_id, condition):
-    return os.path.join(output_root, town, f"route_{route_id}", condition)
+    """
+    The condition directory (RGB lives here). Geometry / labels /
+    frame_object_counts.csv / canonical_spawn_summary.json sit next to it
+    under route_<id>/geometry -- resolve with
+    src.data.layout.resolve_geometry_root(sequence_root(...)).
+    """
+    return os.path.join(output_root, town, f"route_{route_id}", "conditions", condition)
 
 
 # ------------------------------------------------------------------
@@ -112,7 +120,7 @@ def sequence_root(output_root, town, route_id, condition):
 # ------------------------------------------------------------------
 
 def load_frame_object_counts(sequence_dir):
-    path = os.path.join(sequence_dir, "frame_object_counts.csv")
+    path = os.path.join(resolve_geometry_root(sequence_dir), "frame_object_counts.csv")
 
     if not os.path.isfile(path):
         raise FileNotFoundError(
@@ -373,7 +381,7 @@ def main():
 
     rows = load_frame_object_counts(seq_dir)
     shutil.copyfile(
-        os.path.join(seq_dir, "frame_object_counts.csv"),
+        os.path.join(resolve_geometry_root(seq_dir), "frame_object_counts.csv"),
         os.path.join(output_dir, "frame_object_counts.csv"),
     )
 
@@ -448,7 +456,7 @@ def main():
     # Section 18: spawn/despawn stats
     # -------------------------------------------------------------
 
-    spawn_summary_path = os.path.join(seq_dir, "canonical_spawn_summary.json")
+    spawn_summary_path = os.path.join(resolve_geometry_root(seq_dir), "canonical_spawn_summary.json")
     spawn_summary = {}
 
     if os.path.isfile(spawn_summary_path):

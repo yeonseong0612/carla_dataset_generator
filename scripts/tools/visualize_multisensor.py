@@ -58,6 +58,7 @@ sys.path.insert(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
 )
 
+from src.data.layout import resolve_geometry_root  # noqa: E402
 from CFG.config import cfg
 
 from scripts.tools.visualize_annotations import (
@@ -99,7 +100,7 @@ MERGED_RADAR_KEY = "merged"
 # ------------------------------------------------------------------
 
 def load_lidar(sequence_root, frame_id):
-    path = os.path.join(sequence_root, "lidar", f"{frame_id:06d}.npy")
+    path = os.path.join(resolve_geometry_root(sequence_root), "lidar", f"{frame_id:06d}.npy")
 
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -108,7 +109,7 @@ def load_lidar(sequence_root, frame_id):
 
 
 def load_radar(sequence_root, frame_id, sensor_name="radar"):
-    path = os.path.join(sequence_root, sensor_name, f"{frame_id:06d}.npy")
+    path = os.path.join(resolve_geometry_root(sequence_root), sensor_name, f"{frame_id:06d}.npy")
 
     if not os.path.isfile(path):
         raise FileNotFoundError(path)
@@ -127,12 +128,12 @@ def check_frame_files(sequence_root, frame_id, camera_name):
 
     required = {
         camera_name: os.path.join(sequence_root, camera_name, f"{frame_name}.png"),
-        "lidar": os.path.join(sequence_root, "lidar", f"{frame_name}.npy"),
-        "labels/object_3d": os.path.join(sequence_root, "labels", "object_3d", f"{frame_name}.json"),
+        "lidar": os.path.join(resolve_geometry_root(sequence_root), "lidar", f"{frame_name}.npy"),
+        "labels/object_3d": os.path.join(resolve_geometry_root(sequence_root), "labels", "object_3d", f"{frame_name}.json"),
     }
 
     for sensor_name in RADAR_SENSOR_NAMES:
-        required[sensor_name] = os.path.join(sequence_root, sensor_name, f"{frame_name}.npy")
+        required[sensor_name] = os.path.join(resolve_geometry_root(sequence_root), sensor_name, f"{frame_name}.npy")
 
     missing = [name for name, path in required.items() if not os.path.isfile(path)]
 
@@ -925,7 +926,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="RGB + 3D bbox | LiDAR BEV | Radar BEV synchronized validation view."
     )
-    parser.add_argument("--sequence", type=str, required=True, help="Path to a sequence root, e.g. outputs/town10_multiradar_validation/Town10/route_0/day_clear")
+    parser.add_argument("--sequence", type=str, required=True, help="Path to a sequence root, e.g. outputs/town10_multiradar_validation/Town10/route_0/conditions/day_clear")
     parser.add_argument("--camera", type=str, default="rgb_left", help="Camera name as used in calibration.json / directory name")
     parser.add_argument("--frames", type=int, nargs="+", default=None, help="Explicit list of frame ids to render")
     parser.add_argument("--num-samples", type=int, default=None, help="Evenly-spaced number of frames to sample across the sequence")
