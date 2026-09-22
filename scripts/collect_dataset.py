@@ -77,7 +77,10 @@ import carla
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-CARLA_ROOT = Path(r"C:\CARLA")
+# Overridable via the CARLA_ROOT environment variable so the same source
+# tree runs unmodified on a remote server whose CARLA install path differs
+# from this machine's (kept as the fallback default for local continuity).
+CARLA_ROOT = Path(os.environ.get("CARLA_ROOT", r"C:\CARLA"))
 CARLA_PYTHONAPI = CARLA_ROOT / "PythonAPI" / "carla"
 
 sys.path.insert(
