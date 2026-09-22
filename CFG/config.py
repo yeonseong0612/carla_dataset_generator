@@ -191,6 +191,15 @@ cfg.SPAWN.MIN_EGO_SPACING = 10.0
 cfg.SPAWN.MIN_VEHICLE_SPACING = 8.0
 cfg.SPAWN.MIN_CROSS_LANE_SPACING = 3.0
 
+# Same-lane, in-front-of-ego candidates closer than this (route-relative
+# longitudinal distance, not Euclidean) are rejected at spawn time only --
+# see src.simulation.spawn_policy.same_lane_front_gap_ok(), shared by
+# initial placement (GammaSpawnPolicy) and canonical runtime buffer
+# replenishment (CanonicalBackgroundTraffic). Adjacent/opposite lanes and
+# actors behind ego are unaffected. Does not despawn/teleport actors that
+# later approach ego naturally while driving.
+cfg.SPAWN.MIN_SAME_LANE_FRONT_GAP_M = 25.0
+
 cfg.SPAWN.MIN_PEDESTRIAN_SPACING = 2.5
 
 cfg.SPAWN.MAX_ATTEMPTS = 20

@@ -19,6 +19,7 @@ from src.simulation.spawn_policy import (
     driving_lane_candidates,
     choose_lane,
     vehicle_spacing_ok,
+    same_lane_front_gap_ok,
     far_enough,
     sidewalk_waypoint_near,
     largest_remainder_allocation,
@@ -529,11 +530,10 @@ class CanonicalBackgroundTraffic:
             if lane_waypoint is None:
                 continue
 
-            if (
-                ego_road_id is not None
-                and lane_waypoint.road_id == ego_road_id
-                and lane_waypoint.lane_id == ego_lane_id
-                and relative_s < self.cfg.SPAWN.MIN_SAME_LANE_EGO_SPAWN_DISTANCE
+            if not same_lane_front_gap_ok(
+                lane_waypoint.road_id, lane_waypoint.lane_id, relative_s,
+                ego_road_id, ego_lane_id,
+                self.cfg.SPAWN.MIN_SAME_LANE_FRONT_GAP_M,
             ):
                 same_lane_rejections += 1
                 continue

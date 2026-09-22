@@ -126,6 +126,31 @@ def vehicle_spacing_ok(location, road_id, lane_id, s, placed_vehicle_records, sa
 
     return True
 
+
+def same_lane_front_gap_ok(candidate_road_id, candidate_lane_id, relative_s, ego_road_id, ego_lane_id, min_gap_m):
+    """
+    Spawn-time-only guard: reject a moving-traffic candidate (car/truck/
+    van/motorcycle/bicycle) that would be placed in ego's own current
+    driving lane, strictly ahead of ego, closer than min_gap_m -- measured
+    as route-relative longitudinal distance (relative_s, matching
+    vehicle_spacing_ok's "s" convention), not Euclidean distance. Adjacent/
+    opposite lanes and behind-ego candidates (relative_s <= 0) are always
+    accepted here -- this only shrinks the initial/replenishment spawn
+    pool, it never touches an actor once it exists (see CanonicalBackground
+    Traffic.update(), which never despawns for closeness).
+    """
+
+    if ego_road_id is None:
+        return True
+
+    if candidate_road_id != ego_road_id or candidate_lane_id != ego_lane_id:
+        return True
+
+    if relative_s <= 0.0:
+        return True
+
+    return relative_s >= min_gap_m
+
 class GammaSpawnPolicy:
 
     def __init__(self, world, ego, dense_route, traffic_manager, cfg):
@@ -139,6 +164,12 @@ class GammaSpawnPolicy:
 
         self.carla_map = world.get_map()
         self.ego_location = ego.get_location()
+
+        ego_waypoint = self.carla_map.get_waypoint(
+            self.ego_location, project_to_road=True, lane_type=carla.LaneType.Driving,
+        )
+        self.ego_road_id = ego_waypoint.road_id if ego_waypoint is not None else None
+        self.ego_lane_id = ego_waypoint.lane_id if ego_waypoint is not None else None
 
         self.vehicle_pools = get_traffic_blueprints(world)
 
@@ -178,6 +209,13 @@ class GammaSpawnPolicy:
             lane_waypoint = choose_lane(self.rng, candidates)
 
             if lane_waypoint is None:
+                continue
+
+            if category in VEHICLE_LIKE_CATEGORIES and not same_lane_front_gap_ok(
+                lane_waypoint.road_id, lane_waypoint.lane_id, actual_distance,
+                self.ego_road_id, self.ego_lane_id,
+                self.cfg.SPAWN.MIN_SAME_LANE_FRONT_GAP_M,
+            ):
                 continue
 
             transform = carla.Transform(

@@ -244,15 +244,24 @@ class AnnotationWriter:
         already in the sensor rig (co-located + pixel-aligned with
         rgb_left -- see src/sensors/camera.py, same transform/width/
         height/fov for both). A pixel inside the clipped 2D bbox is
-        counted "visible" if the depth image's value there is not
-        nearer than the object's own closest projected vertex (minus a
-        small tolerance for depth-buffer/mesh-vs-bbox slack) -- i.e.
-        nothing closer than the object itself is rendered at that
-        pixel. This is a simple, standard depth-threshold heuristic
-        (not a per-pixel object mask -- CARLA's semantic segmentation
-        camera is class-level only, not per-instance, so it can't
-        distinguish "this actor" from another same-class actor and
-        isn't a better fit here), applied over the bbox rectangle
+        counted "visible" if the depth image's value there falls within
+        the object's own projected depth range -- not nearer than its
+        closest projected vertex, and not farther than its farthest
+        projected vertex (both with a small tolerance for depth-buffer/
+        mesh-vs-bbox slack) -- i.e. nothing closer than the object
+        itself is rendered at that pixel, AND the pixel isn't just open
+        background beyond the object leaking into its (rectangular,
+        not silhouette-shaped) bbox. The upper bound matters because
+        the bbox is axis-aligned, not a silhouette (see below): without
+        it, a far object's small bbox sitting mostly on empty background
+        past it (e.g. a wall, sidewalk, or open street strictly farther
+        than the object's own far vertex) has that background counted
+        as "the object visible", which does not agree with the actual
+        rendered image. This is a simple, standard depth-threshold
+        heuristic (not a per-pixel object mask -- CARLA's semantic
+        segmentation camera is class-level only, not per-instance, so
+        it can't distinguish "this actor" from another same-class actor
+        and isn't a better fit here), applied over the bbox rectangle
         itself since no finer per-pixel silhouette is available; this
         does mean a loose/rectangular bbox around a visually thin
         object (e.g. a pedestrian) can under-count its own
@@ -313,10 +322,14 @@ class AnnotationWriter:
             return metrics
 
         near_depth = float(v_cv[valid, 2].min())
+        far_depth = float(v_cv[valid, 2].max())
         depth_tolerance_m = 0.5
 
         depth_patch = depth_m[py0:py1, px0:px1]
-        visible_mask = depth_patch >= (near_depth - depth_tolerance_m)
+        visible_mask = (
+            (depth_patch >= (near_depth - depth_tolerance_m))
+            & (depth_patch <= (far_depth + depth_tolerance_m))
+        )
 
         projected_pixel_count = depth_patch.size
         visible_pixel_count = int(visible_mask.sum())
