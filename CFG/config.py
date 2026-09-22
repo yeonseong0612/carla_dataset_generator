@@ -198,7 +198,20 @@ cfg.SPAWN.MIN_CROSS_LANE_SPACING = 3.0
 # replenishment (CanonicalBackgroundTraffic). Adjacent/opposite lanes and
 # actors behind ego are unaffected. Does not despawn/teleport actors that
 # later approach ego naturally while driving.
-cfg.SPAWN.MIN_SAME_LANE_FRONT_GAP_M = 25.0
+# Raised 25.0 -> 80.0 (traffic-generation final tuning task) to further
+# reduce how often a single same-lane lead vehicle dominates the camera
+# view; the rule/paths are unchanged, only this threshold moved.
+cfg.SPAWN.MIN_SAME_LANE_FRONT_GAP_M = 80.0
+
+# Ticks to advance the simulation (world.tick(), no controls/recording)
+# after ego + initial traffic + traffic-manager configuration are all in
+# place, but before frame_id=0 is recorded -- lets background traffic
+# leave its just-spawned at-rest state before the dataset starts, without
+# moving ego or writing any warm-up frame to disk. See
+# scripts/collect_dataset.py generate_canonical_geometry(). At
+# cfg.SIMULATION.FIXED_DELTA_SECONDS (1/20 s), 20 ticks = 1 simulation
+# second.
+cfg.SPAWN.PRE_RECORD_WARMUP_TICKS = 20
 
 cfg.SPAWN.MIN_PEDESTRIAN_SPACING = 2.5
 
@@ -326,6 +339,19 @@ cfg.SPAWN.FRAME_OBJECT_MAX_NEW_PER_UPDATE = 2
 # an over-target excess. Visible-ROI actors are never eligible -- see
 # CanonicalBackgroundTraffic.update()'s pruning block.
 cfg.SPAWN.FRAME_OBJECT_MAX_PRUNE_PER_UPDATE = 2
+
+#################################################################
+### Traffic Light Cycle (production town initialization, applied once
+### per town load -- see scripts/collect_dataset.py
+### configure_traffic_lights(). CARLA-managed group/state transition
+### logic itself is untouched; only each state's duration is shortened
+### to reduce how long a route sits stopped at red.)
+#################################################################
+
+cfg.TRAFFIC_LIGHT = EasyDict()
+cfg.TRAFFIC_LIGHT.GREEN_TIME_S = 8.0
+cfg.TRAFFIC_LIGHT.YELLOW_TIME_S = 2.0
+cfg.TRAFFIC_LIGHT.RED_TIME_S = 8.0
 
 #################################################################
 ### Annotation

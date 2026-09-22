@@ -124,6 +124,7 @@ from src.simulation.pedestrian import (
 
 from src.simulation.spawn_policy import (
     DynamicSpawnManager,
+    VEHICLE_LIKE_CATEGORIES,
     spawn_actors_gamma_policy,
 )
 from src.simulation.canonical_traffic import (
@@ -672,6 +673,109 @@ def log_runtime_weather(world, label):
     )
 
 
+def configure_traffic_lights(world, cfg):
+    """
+    Apply cfg.TRAFFIC_LIGHT.{GREEN,YELLOW,RED}_TIME_S to every traffic
+    light in the just-loaded town, once. Only each state's duration is
+    changed via CARLA's own set_green_time/set_yellow_time/set_red_time --
+    group membership, state, and CARLA's own transition scheduling are
+    untouched. A light that raises while being configured is counted and
+    reported, not silently skipped.
+    """
+
+    lights = world.get_actors().filter("traffic.traffic_light")
+
+    configured = 0
+    failures = []
+
+    for light in lights:
+        try:
+            light.set_green_time(cfg.TRAFFIC_LIGHT.GREEN_TIME_S)
+            light.set_yellow_time(cfg.TRAFFIC_LIGHT.YELLOW_TIME_S)
+            light.set_red_time(cfg.TRAFFIC_LIGHT.RED_TIME_S)
+            configured += 1
+        except RuntimeError as exc:
+            failures.append((light.id, str(exc)))
+
+    print(
+        f"[TrafficLight] configured {configured} lights: "
+        f"green={cfg.TRAFFIC_LIGHT.GREEN_TIME_S}s "
+        f"yellow={cfg.TRAFFIC_LIGHT.YELLOW_TIME_S}s "
+        f"red={cfg.TRAFFIC_LIGHT.RED_TIME_S}s"
+    )
+
+    if failures:
+        print(f"[TrafficLight] failed to configure {len(failures)} lights:")
+
+        for light_id, reason in failures:
+            print(f"[TrafficLight]   id={light_id} reason={reason}")
+
+    return {"configured": configured, "failed": len(failures)}
+
+
+STATIONARY_SPEED_THRESHOLD_MPS = 0.5
+STATIONARY_DIAGNOSTIC_FRAMES = (0, 1, 5, 10)
+
+
+def log_stationary_vehicle_diagnostic(local_frame_id, managed_actors):
+    """
+    Diagnostic only (CLAUDE.md PART F): at a handful of early recorded
+    frames, report how many managed vehicle-like actors are still below
+    STATIONARY_SPEED_THRESHOLD_MPS, split into "stopped at a red light"
+    (expected/normal) vs. "other" (candidate not-yet-initialized traffic).
+    Never destroys or otherwise touches any actor.
+    """
+
+    if local_frame_id not in STATIONARY_DIAGNOSTIC_FRAMES:
+        return
+
+    total = 0
+    moving = 0
+    stationary_red_light = 0
+    stationary_other = 0
+
+    for managed in managed_actors:
+        if managed["category"] not in VEHICLE_LIKE_CATEGORIES:
+            continue
+
+        actor = managed["actor"]
+
+        if actor is None or not actor.is_alive:
+            continue
+
+        total += 1
+
+        velocity = actor.get_velocity()
+        speed = (velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2) ** 0.5
+
+        if speed >= STATIONARY_SPEED_THRESHOLD_MPS:
+            moving += 1
+            continue
+
+        is_red_light = False
+
+        try:
+            if actor.is_at_traffic_light():
+                is_red_light = actor.get_traffic_light_state() == carla.TrafficLightState.Red
+        except RuntimeError:
+            is_red_light = False
+
+        if is_red_light:
+            stationary_red_light += 1
+        else:
+            stationary_other += 1
+
+    stationary = stationary_red_light + stationary_other
+    stationary_ratio = (stationary / total) if total else 0.0
+
+    print(
+        f"[StationaryDiagnostic] frame={local_frame_id} total={total} "
+        f"moving={moving} stationary={stationary} "
+        f"(red_light={stationary_red_light} other={stationary_other}) "
+        f"stationary_ratio={stationary_ratio:.3f}"
+    )
+
+
 # ============================================================
 # Condition / route metadata helpers
 # ============================================================
@@ -1160,9 +1264,18 @@ def generate_canonical_geometry(
         # ====================================================
         # Warmup
         # ====================================================
+        # cfg.SPAWN.PRE_RECORD_WARMUP_TICKS (production, tunable
+        # independent of replay's own WARMUP_FRAMES below): lets
+        # just-spawned background traffic leave its at-rest state before
+        # frame_id=0 is recorded. Ego is not driven here (no
+        # route_controller.run_step()/apply_control() call), so it stays
+        # at its spawn transform. No collector/metadata/world_state/
+        # annotation call happens in this loop, so no warm-up frame is
+        # ever written to disk; rig.clear_queues() below flushes any
+        # sensor data these ticks produced.
 
         for _ in range(
-            WARMUP_FRAMES
+            cfg.SPAWN.PRE_RECORD_WARMUP_TICKS
         ):
             world.tick()
 
@@ -1309,6 +1422,16 @@ def generate_canonical_geometry(
             )
 
             saved_frames += 1
+
+            # ------------------------------------------------
+            # Diagnostic only (CLAUDE.md PART F): initial stationary
+            # traffic ratio at a few early recorded frames. Read-only,
+            # never spawns/despawns/destroys anything.
+            # ------------------------------------------------
+
+            log_stationary_vehicle_diagnostic(
+                local_frame_id, spawn_manager.managed_actors,
+            )
 
             # ------------------------------------------------
             # Phase 2: dynamic density maintenance
@@ -2448,6 +2571,13 @@ def main():
                 f"static pedestrians disabled: "
                 f"{static_removed['pedestrians']}"
             )
+
+            # =================================================
+            # Traffic light cycle (applied once per town load; state
+            # duration only -- see configure_traffic_lights())
+            # =================================================
+
+            configure_traffic_lights(world, cfg)
 
             # =================================================
             # Traffic manager (canonical geometry generation only)

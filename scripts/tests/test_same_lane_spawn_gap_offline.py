@@ -35,29 +35,44 @@ from CFG.config import cfg  # noqa: E402
 from src.simulation.spawn_policy import same_lane_front_gap_ok, GammaSpawnPolicy  # noqa: E402
 from src.simulation.canonical_traffic import CanonicalBackgroundTraffic  # noqa: E402
 
-GAP_M = 25.0
+GAP_M = 80.0
 EGO_ROAD, EGO_LANE = 5, 1
 
 
 class SameLaneFrontGapRuleTest(unittest.TestCase):
-    """Pure-function tests for same_lane_front_gap_ok()."""
+    """
+    Pure-function tests for same_lane_front_gap_ok().
+
+    GAP_M was raised 25.0 -> 80.0 by the traffic-generation final-tuning
+    task (CLAUDE.md PART A); the rule itself (same lane, strictly ahead,
+    0 < relative_s < gap) is unchanged, only the gap value moved.
+    """
 
     def test_same_lane_front_10m_rejected(self):
         self.assertFalse(same_lane_front_gap_ok(EGO_ROAD, EGO_LANE, 10.0, EGO_ROAD, EGO_LANE, GAP_M))
 
-    def test_same_lane_front_24_9m_rejected(self):
-        self.assertFalse(same_lane_front_gap_ok(EGO_ROAD, EGO_LANE, 24.9, EGO_ROAD, EGO_LANE, GAP_M))
+    def test_same_lane_front_25m_rejected(self):
+        self.assertFalse(same_lane_front_gap_ok(EGO_ROAD, EGO_LANE, 25.0, EGO_ROAD, EGO_LANE, GAP_M))
 
-    def test_same_lane_front_25_0m_accepted(self):
-        self.assertTrue(same_lane_front_gap_ok(EGO_ROAD, EGO_LANE, 25.0, EGO_ROAD, EGO_LANE, GAP_M))
+    def test_same_lane_front_79_9m_rejected(self):
+        self.assertFalse(same_lane_front_gap_ok(EGO_ROAD, EGO_LANE, 79.9, EGO_ROAD, EGO_LANE, GAP_M))
 
-    def test_same_lane_front_30m_accepted(self):
-        self.assertTrue(same_lane_front_gap_ok(EGO_ROAD, EGO_LANE, 30.0, EGO_ROAD, EGO_LANE, GAP_M))
+    def test_same_lane_front_80_0m_accepted(self):
+        self.assertTrue(same_lane_front_gap_ok(EGO_ROAD, EGO_LANE, 80.0, EGO_ROAD, EGO_LANE, GAP_M))
+
+    def test_same_lane_front_100m_accepted(self):
+        self.assertTrue(same_lane_front_gap_ok(EGO_ROAD, EGO_LANE, 100.0, EGO_ROAD, EGO_LANE, GAP_M))
 
     def test_adjacent_lane_10m_accepted(self):
-        # Same road, different lane_id -- CLAUDE.md B-4: adjacent lane
+        # Same road, different lane_id -- CLAUDE.md B-4/A-2: adjacent lane
         # keeps the existing (unaffected) policy, not this new rule.
         self.assertTrue(same_lane_front_gap_ok(EGO_ROAD, EGO_LANE + 1, 10.0, EGO_ROAD, EGO_LANE, GAP_M))
+
+    def test_opposite_lane_10m_accepted(self):
+        # Same road, opposite-direction lane_id (sign flipped, CARLA's own
+        # convention) -- also just "different lane_id" to this function,
+        # so the existing (unaffected) policy applies, not this new rule.
+        self.assertTrue(same_lane_front_gap_ok(EGO_ROAD, -EGO_LANE, 10.0, EGO_ROAD, EGO_LANE, GAP_M))
 
     def test_different_road_10m_accepted(self):
         self.assertTrue(same_lane_front_gap_ok(EGO_ROAD + 1, EGO_LANE, 10.0, EGO_ROAD, EGO_LANE, GAP_M))
@@ -93,7 +108,7 @@ class SpawnPathsUseSharedRuleTest(unittest.TestCase):
         self.assertIn("same_lane_front_gap_ok", source)
 
     def test_config_parameter_exists_with_recommended_default(self):
-        self.assertEqual(cfg.SPAWN.MIN_SAME_LANE_FRONT_GAP_M, 25.0)
+        self.assertEqual(cfg.SPAWN.MIN_SAME_LANE_FRONT_GAP_M, 80.0)
 
 
 class PedestrianUnaffectedTest(unittest.TestCase):
