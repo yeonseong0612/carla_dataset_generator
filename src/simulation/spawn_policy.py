@@ -153,12 +153,17 @@ def same_lane_front_gap_ok(candidate_road_id, candidate_lane_id, relative_s, ego
 
 class GammaSpawnPolicy:
 
-    def __init__(self, world, ego, dense_route, traffic_manager, cfg):
+    def __init__(self, world, ego, dense_route, traffic_manager, cfg, route_s_offset=0.0):
         self.world = world
         self.ego = ego
         self.dense_route = dense_route
         self.traffic_manager = traffic_manager
         self.cfg = cfg
+
+        # DEBUG-ONLY (--debug-start-route-index): the ego's own route arc
+        # length when it does not start at dense_route[0]. Production is
+        # always 0.0, which keeps _reference_at() on the original path.
+        self.route_s_offset = float(route_s_offset)
 
         self.rng = np.random.default_rng(cfg.SPAWN.SEED)
 
@@ -200,7 +205,7 @@ class GammaSpawnPolicy:
 
             self.proposed_s.append(s)
 
-            reference_waypoint, actual_distance = reference_waypoint_at_distance(self.dense_route, s)
+            reference_waypoint, actual_distance = self._reference_at(s)
 
             if reference_waypoint is None:
                 continue
@@ -272,7 +277,7 @@ class GammaSpawnPolicy:
 
             self.proposed_s.append(s)
 
-            reference_waypoint, actual_distance = reference_waypoint_at_distance(self.dense_route, s)
+            reference_waypoint, actual_distance = self._reference_at(s)
 
             if reference_waypoint is None:
                 continue
@@ -333,6 +338,24 @@ class GammaSpawnPolicy:
 
         return None
 
+
+    def _reference_at(self, s):
+        """
+        (reference_waypoint, distance ahead of the ego along the route).
+        Gamma distances are ego-relative; production spawns the ego at
+        dense_route[0], so they are used as absolute route arc lengths
+        unchanged.
+        """
+
+        if not self.route_s_offset:
+            return reference_waypoint_at_distance(self.dense_route, s)
+
+        waypoint, absolute_s = reference_waypoint_at_distance(self.dense_route, self.route_s_offset + s)
+
+        if waypoint is None:
+            return None, None
+
+        return waypoint, absolute_s - self.route_s_offset
 
     def _record(self, category, actor_id, sampled_s, actual_distance, waypoint, location):
         record = {
@@ -406,9 +429,9 @@ class GammaSpawnPolicy:
         }
 
 
-def spawn_actors_gamma_policy(world, ego, dense_route, traffic_manager, cfg, **counts):
+def spawn_actors_gamma_policy(world, ego, dense_route, traffic_manager, cfg, route_s_offset=0.0, **counts):
 
-    policy = GammaSpawnPolicy(world, ego, dense_route, traffic_manager, cfg)
+    policy = GammaSpawnPolicy(world, ego, dense_route, traffic_manager, cfg, route_s_offset=route_s_offset)
 
     return policy.run(**counts)
 

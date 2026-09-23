@@ -109,6 +109,12 @@ from src.navigation.route import (
 )
 
 from src.navigation.controller import RouteController
+from src.navigation.debug_start import (
+    debug_start_banner,
+    route_arc_length_at,
+    select_route_start,
+    validate_debug_start_route_index,
+)
 
 from src.simulation.vehicle import destroy_vehicle
 
@@ -126,6 +132,7 @@ from src.simulation.pedestrian import (
 from src.simulation.spawn_policy import (
     DynamicSpawnManager,
     VEHICLE_LIKE_CATEGORIES,
+    build_route_arc_length_table,
     spawn_actors_gamma_policy,
 )
 from src.simulation.canonical_traffic import (
@@ -169,7 +176,20 @@ from src.simulation.replay import (
     WorldStateReplayer,
     weather_to_dict,
 )
+from src.simulation.route_watchdog import (
+    RouteNoProgressError,
+    RouteProgressWatchdog,
+)
 from src.simulation.timing import is_record_tick, record_stride_ticks
+from src.simulation.stall_diagnostics import (
+    StallMonitor,
+    StuckStateLogger,
+    describe_vehicle,
+    extract_stuck_state,
+    format_stall_report,
+    format_stuck_state,
+    forward_vehicle_chain,
+)
 from src.simulation.weather import WEATHER_WIND_INTENSITY, apply_weather
 
 
@@ -345,6 +365,36 @@ def parse_args():
         ),
     )
 
+    # --------------------------------------------------------
+    # DEBUG-ONLY (stall root-cause diagnosis). Omitting both flags keeps
+    # the production control flow unchanged.
+    # --------------------------------------------------------
+
+    parser.add_argument(
+        "--debug-start-route-index",
+        type=int,
+        default=None,
+        help=(
+            "DEBUG ONLY -- NOT FOR PRODUCTION DATA. Spawn the ego at this "
+            "dense-route index instead of the route start and continue the "
+            "route from there (initial Gamma traffic / canonical buffer are "
+            "placed relative to that position). Requires a single town/"
+            "route and a non-default --output-root. Enables "
+            "--debug-stall-diagnostics."
+        ),
+    )
+
+    parser.add_argument(
+        "--debug-stall-diagnostics",
+        action="store_true",
+        help=(
+            "DEBUG ONLY: print read-only [STALL-DIAG] (ego stopped with "
+            "target>5 km/h and no red light for 5 simulated s) and "
+            "[STUCK-STATE] (RouteController stuck detector, 1 s cadence) "
+            "logs. Never changes control, traffic or recording."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -415,6 +465,7 @@ def get_sensor_actors(rig):
 def spawn_ego_at_route_start(
     world,
     dense_route,
+    start_route_index=None,
 ):
     if not dense_route:
         raise RuntimeError(
@@ -435,7 +486,12 @@ def spawn_ego_at_route_start(
             "hero",
         )
 
-    waypoint = dense_route[0][0]
+    # start_route_index is DEBUG-ONLY (--debug-start-route-index); None
+    # selects dense_route[0], the production spawn point.
+    waypoint, _index = select_route_start(
+        dense_route,
+        start_route_index,
+    )
 
     transform = carla.Transform(
         waypoint.transform.location,
@@ -791,6 +847,226 @@ def log_stationary_vehicle_diagnostic(local_frame_id, managed_actors):
 
 
 # ============================================================
+# DEBUG-ONLY stall diagnostics / mid-route start guards
+# ============================================================
+
+PRODUCTION_OUTPUT_ROOT = os.path.join(
+    cfg.PROJECT.ROOT,
+    "dataset",
+)
+
+
+def check_debug_start_args(args, output_root):
+    """
+    --debug-start-route-index output must never be mistaken for a
+    production route: refuse the default dataset root and multi-route
+    runs (the index is specific to one dense route).
+    """
+
+    if os.path.normcase(output_root) == os.path.normcase(
+        os.path.abspath(PRODUCTION_OUTPUT_ROOT)
+    ):
+        raise SystemExit(
+            "--debug-start-route-index writes a DEBUG (not production) "
+            "sequence: pass a separate --output-root, e.g. "
+            "D:\\carla_stall_fasttest."
+        )
+
+    if (
+        not args.towns or len(args.towns) != 1
+        or not args.routes or len(args.routes) != 1
+    ):
+        raise SystemExit(
+            "--debug-start-route-index requires exactly one --towns and "
+            "one --routes value."
+        )
+
+    if args.debug_start_route_index < 0:
+        raise SystemExit(
+            "--debug-start-route-index must be >= 0."
+        )
+
+    bar = "!" * 64
+    print(bar)
+    print("DEBUG MID-ROUTE START requested -- NOT FOR PRODUCTION DATA")
+    print(f"output_root={output_root} (keep separate from the dataset)")
+    print(bar)
+
+
+def log_stall_and_stuck_diagnostics(
+    world,
+    diag_map,
+    ego,
+    control,
+    route_controller,
+    route_status,
+    stall_monitor,
+    stuck_logger,
+    timestamp,
+    simulation_tick_idx,
+    carla_frame,
+    saved_frames,
+    arc_length_table,
+    spawn_manager,
+    world_state_recorder,
+):
+    """
+    Read-only (never applies control, spawns, destroys or reconfigures
+    anything). Clocks: stall duration uses the simulation timestamp;
+    the controller's own stuck timer is wall-clock and is only reported.
+    """
+
+    speed_kmh = route_status.get("speed_kmh", 0.0)
+    target_kmh = route_status.get("target_speed_kmh", 0.0)
+    red_light = route_status.get("waiting_red_light", False)
+
+    stuck_state = extract_stuck_state(
+        route_controller,
+        time.monotonic(),
+    )
+
+    if stuck_logger.should_print(timestamp, stuck_state):
+        print(
+            format_stuck_state(
+                stuck_state,
+                speed_kmh,
+                stuck_logger.elapsed_sim_s(timestamp),
+            )
+        )
+
+    if not stall_monitor.update(timestamp, speed_kmh, target_kmh, red_light):
+        return
+
+    route_index = route_status.get("route_index", 0)
+
+    header = {
+        "duration": f"{stall_monitor.duration_s:.1f}s (simulation)",
+        "record_frame": max(saved_frames - 1, 0),
+        "sim_tick": simulation_tick_idx,
+        "carla_frame": carla_frame,
+        "route_index": f"{route_index}/{route_status.get('route_length', 1) - 1}",
+        "progress": f"{route_status.get('progress', 0.0):.2f}%",
+        "ego_s": f"{arc_length_table[route_index]:.1f}m",
+    }
+
+    ego_transform = ego.get_transform()
+    ego_waypoint = diag_map.get_waypoint(ego_transform.location)
+
+    try:
+        at_light = bool(ego.is_at_traffic_light())
+        light_state = str(ego.get_traffic_light_state())
+    except RuntimeError:
+        at_light, light_state = "N/A", "N/A"
+
+    ego_info = {
+        "speed": f"{speed_kmh:.3f} km/h",
+        "target_speed": f"{target_kmh:.1f} km/h",
+        "throttle": round(control.throttle, 3),
+        "brake": round(control.brake, 3),
+        "steer": round(control.steer, 3),
+        "hand_brake": control.hand_brake,
+        "road_id": ego_waypoint.road_id if ego_waypoint else "N/A",
+        "lane_id": ego_waypoint.lane_id if ego_waypoint else "N/A",
+        "is_junction": ego_waypoint.is_junction if ego_waypoint else "N/A",
+        "transform": (
+            f"x={ego_transform.location.x:.2f} y={ego_transform.location.y:.2f} "
+            f"yaw={ego_transform.rotation.yaw:.1f}"
+        ),
+        "traffic_light_state": light_state,
+        "at_traffic_light": at_light,
+        "waiting_red_light(controller)": red_light,
+        "curve_angle": f"{route_status.get('curve_angle_deg', 0.0):.1f}",
+    }
+
+    managed_ids = {
+        managed["actor"].id
+        for managed in spawn_manager.managed_actors
+        if managed["actor"] is not None
+    }
+
+    # Every live vehicle in the world (not only managed ones), so an
+    # unmanaged leftover blocker is still found.
+    vehicles = [
+        actor
+        for actor in world.get_actors().filter("vehicle.*")
+        if actor.id != ego.id
+    ]
+
+    chain_infos = [
+        (
+            hit,
+            describe_vehicle(
+                actor,
+                diag_map,
+                logical_id=world_state_recorder.logical_id_for(actor.id),
+                managed=actor.id in managed_ids,
+            ),
+        )
+        for actor, hit in forward_vehicle_chain(ego, vehicles)
+    ]
+
+    print(
+        format_stall_report(
+            header,
+            ego_info,
+            chain_infos,
+            stuck_state,
+        )
+    )
+
+
+def log_route_watchdog_failure(
+    town,
+    route_id,
+    route_watchdog,
+    ego,
+    ego_s,
+    timestamp,
+    simulation_tick_idx,
+    saved_frames,
+    route_status,
+):
+    """
+    Diagnostic banner for a route no-progress watchdog failure. Uses the
+    values already computed this tick; the ego traffic-light state is the
+    only extra RPC, issued once on failure.
+    """
+
+    try:
+        light_state = str(ego.get_traffic_light_state())
+    except RuntimeError:
+        light_state = "unavailable"
+
+    route_index = route_status.get("route_index")
+    route_last_index = route_status.get("route_length", 1) - 1
+
+    print()
+    print("=" * 72)
+    print("[ROUTE NO-PROGRESS WATCHDOG]")
+    print(f"Town: {town}")
+    print(f"Route: {route_id}")
+    print(f"Record frame: {saved_frames}")
+    print(f"Simulation tick: {simulation_tick_idx}")
+    print(f"Simulation time: {timestamp:.2f} s")
+    print(
+        "No meaningful progress for: "
+        f"{route_watchdog.no_progress_duration(timestamp):.1f} "
+        "simulation seconds"
+    )
+    print(f"Progress threshold: {route_watchdog.min_progress_m:.1f} m")
+    print(f"Anchor ego_s: {route_watchdog.anchor_ego_s:.1f} m")
+    print(f"Current ego_s: {ego_s:.1f} m")
+    print(f"Delta s: {ego_s - route_watchdog.anchor_ego_s:.2f} m")
+    print(f"Route index: {route_index}/{route_last_index}")
+    print(f"Progress: {route_status.get('progress', 0.0):.1f}%")
+    print(f"Speed: {route_status.get('speed_kmh', 0.0):.2f} km/h")
+    print(f"Target speed: {route_status.get('target_speed_kmh', 0.0):.2f} km/h")
+    print(f"Red light: {route_status.get('waiting_red_light', False)}")
+    print(f"Traffic light state: {light_state}")
+    print("=" * 72)
+
+
+# ============================================================
 # Condition / route metadata helpers
 # ============================================================
 
@@ -888,6 +1164,8 @@ def generate_canonical_geometry(
     no_traffic=False,
     no_pedestrians=False,
     background_policy="canonical",
+    debug_start_route_index=None,
+    debug_stall_diagnostics=False,
 ):
     """
     Run the production driving + traffic simulation ONCE for this
@@ -970,10 +1248,44 @@ def generate_canonical_geometry(
         # Ego
         # ====================================================
 
-        ego = spawn_ego_at_route_start(
-            world,
-            dense_route,
-        )
+        # DEBUG-ONLY mid-route start: route arc length of the start index,
+        # used to place initial traffic relative to the ego. Production:
+        # index 0 / offset 0.0 (the unchanged route-start behaviour).
+        debug_route_s_offset = 0.0
+
+        if debug_start_route_index is None:
+
+            ego = spawn_ego_at_route_start(
+                world,
+                dense_route,
+            )
+
+        else:
+
+            validate_debug_start_route_index(
+                debug_start_route_index,
+                len(dense_route),
+            )
+
+            debug_route_s_offset = route_arc_length_at(
+                dense_route,
+                debug_start_route_index,
+            )
+
+            print(
+                debug_start_banner(
+                    debug_start_route_index,
+                    len(dense_route),
+                    debug_route_s_offset,
+                    dense_route[debug_start_route_index][0],
+                )
+            )
+
+            ego = spawn_ego_at_route_start(
+                world,
+                dense_route,
+                start_route_index=debug_start_route_index,
+            )
 
         # Allow spawn state to propagate.
         world.tick()
@@ -994,6 +1306,9 @@ def generate_canonical_geometry(
                 ),
                 traffic_light_policy=(
                     TRAFFIC_LIGHT_POLICY
+                ),
+                start_route_index=(
+                    debug_start_route_index or 0
                 ),
             )
         )
@@ -1031,6 +1346,7 @@ def generate_canonical_geometry(
                 n_motorcycles=initial_counts["n_motorcycles"],
                 n_bicycles=initial_counts["n_bicycles"],
                 n_pedestrians=initial_counts["n_pedestrians"],
+                route_s_offset=debug_route_s_offset,
             )
         else:
             spawn_result = spawn_actors_gamma_policy(
@@ -1043,6 +1359,7 @@ def generate_canonical_geometry(
                 n_motorcycles=0 if no_traffic else None,
                 n_bicycles=0 if no_traffic else None,
                 n_pedestrians=0 if no_pedestrians else None,
+                route_s_offset=debug_route_s_offset,
             )
 
         traffic_actors = spawn_result["traffic_actors"]
@@ -1084,6 +1401,15 @@ def generate_canonical_geometry(
                 spawn_result["rng"],
                 category_totals=category_totals,
             )
+
+        if debug_start_route_index is not None:
+            # DEBUG-ONLY: the managers start their ego route hint at 0 and
+            # only search forward ROUTE_INDEX_SEARCH_WINDOW indices from
+            # it, which cannot reach a mid-route ego. Seed the hint (also
+            # copied into every initial actor's hint below) at the start
+            # index so ego_s / relative_s are measured from the real ego
+            # position.
+            spawn_manager.ego_route_index = debug_start_route_index
 
         spawn_manager.register_initial_actors(spawn_result)
 
@@ -1195,6 +1521,13 @@ def generate_canonical_geometry(
                 if background_policy == "canonical" else None
             ),
         }
+
+        if debug_start_route_index is not None:
+            sequence_extra["debug_mid_route_start"] = {
+                "not_for_production": True,
+                "route_index": debug_start_route_index,
+                "route_s_m": debug_route_s_offset,
+            }
 
         metadata = MetadataWriter(
             sequence_root=geometry_root,
@@ -1338,6 +1671,32 @@ def generate_canonical_geometry(
 
         max_simulation_ticks = max_frames * record_stride
 
+        # DEBUG-ONLY read-only stall / stuck diagnostics (simulation clock).
+        stall_diag_enabled = (
+            debug_stall_diagnostics
+            or debug_start_route_index is not None
+        )
+
+        if stall_diag_enabled:
+            stall_monitor = StallMonitor()
+            stuck_logger = StuckStateLogger()
+            diag_map = world.get_map()
+            diag_arc_length = build_route_arc_length_table(dense_route)
+
+        # Route-level no-progress watchdog (production safety guard,
+        # independent of the controller's stuck detector). ego_s is the
+        # controller's dense-route index mapped to arc length; the clock
+        # is the CARLA snapshot simulation time. Anchored on the first
+        # tick below, i.e. after the (possibly debug mid-route) spawn.
+        route_watchdog = None
+
+        if cfg.ROUTE_WATCHDOG.ENABLED:
+            route_watchdog = RouteProgressWatchdog(
+                timeout_s=cfg.ROUTE_WATCHDOG.NO_PROGRESS_TIMEOUT_S,
+                min_progress_m=cfg.ROUTE_WATCHDOG.MIN_PROGRESS_M,
+            )
+            watchdog_arc_length = build_route_arc_length_table(dense_route)
+
         for simulation_tick_idx in range(
             max_simulation_ticks
         ):
@@ -1398,6 +1757,25 @@ def generate_canonical_geometry(
             record_tick = is_record_tick(
                 simulation_tick_idx, record_stride,
             )
+
+            if stall_diag_enabled:
+                log_stall_and_stuck_diagnostics(
+                    world=world,
+                    diag_map=diag_map,
+                    ego=ego,
+                    control=control,
+                    route_controller=route_controller,
+                    route_status=route_status,
+                    stall_monitor=stall_monitor,
+                    stuck_logger=stuck_logger,
+                    timestamp=timestamp,
+                    simulation_tick_idx=simulation_tick_idx,
+                    carla_frame=carla_frame,
+                    saved_frames=saved_frames,
+                    arc_length_table=diag_arc_length,
+                    spawn_manager=spawn_manager,
+                    world_state_recorder=world_state_recorder,
+                )
 
             record_frame_id = None
             annotation_counts = None
@@ -1642,6 +2020,41 @@ def generate_canonical_geometry(
                     f"{route_status.get('route_index')}"
                 )
 
+            # ------------------------------------------------
+            # Route no-progress watchdog
+            # ------------------------------------------------
+
+            if route_watchdog is not None:
+
+                watchdog_route_index = route_status.get("route_index", 0)
+                watchdog_ego_s = watchdog_arc_length[watchdog_route_index]
+
+                if route_watchdog.update(watchdog_ego_s, timestamp):
+
+                    log_route_watchdog_failure(
+                        town=town,
+                        route_id=route_id,
+                        route_watchdog=route_watchdog,
+                        ego=ego,
+                        ego_s=watchdog_ego_s,
+                        timestamp=timestamp,
+                        simulation_tick_idx=simulation_tick_idx,
+                        saved_frames=saved_frames,
+                        route_status=route_status,
+                    )
+
+                    raise RouteNoProgressError(
+                        "Route no-progress watchdog: "
+                        f"route={route_id}, "
+                        f"condition={source_condition}, "
+                        f"no progress >= "
+                        f"{route_watchdog.min_progress_m:g} m for "
+                        f"{route_watchdog.no_progress_duration(timestamp):.1f} "
+                        f"simulation sec, "
+                        f"ego_s={watchdog_ego_s:.1f}m, "
+                        f"index={watchdog_route_index}"
+                    )
+
         else:
 
             if not truncate_ok:
@@ -1724,9 +2137,26 @@ def generate_canonical_geometry(
             rendered_from="canonical_run",
         )
 
+        complete_info = {"num_frames": saved_frames, "truncated": truncated}
+
+        if debug_start_route_index is not None:
+            complete_info["debug_mid_route_start"] = True
+            complete_info["not_for_production"] = True
+
+            with open(
+                os.path.join(route_path, "DEBUG_NOT_FOR_PRODUCTION.txt"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(
+                    "DEBUG MID-ROUTE START -- NOT FOR PRODUCTION DATA\n"
+                    f"route_index={debug_start_route_index}\n"
+                    f"route_s={debug_route_s_offset:.1f}\n"
+                )
+
         mark_complete(
             geometry_root,
-            {"num_frames": saved_frames, "truncated": truncated},
+            complete_info,
         )
 
         mark_complete(
@@ -2334,6 +2764,12 @@ def process_route(
                 no_traffic=args.no_traffic,
                 no_pedestrians=args.no_pedestrians,
                 background_policy=args.background_policy,
+                debug_start_route_index=getattr(
+                    args, "debug_start_route_index", None,
+                ),
+                debug_stall_diagnostics=getattr(
+                    args, "debug_stall_diagnostics", False,
+                ),
             )
 
             counts["geometry_completed"] += 1
@@ -2512,6 +2948,9 @@ def main():
     output_root = os.path.abspath(
         args.output_root
     )
+
+    if args.debug_start_route_index is not None:
+        check_debug_start_args(args, output_root)
 
     os.makedirs(
         output_root,

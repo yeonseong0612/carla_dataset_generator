@@ -30,6 +30,7 @@ class RouteController:
         curve_lookahead_distance: float = 20.0,
         stuck_speed_threshold: float = 1.0,
         stuck_timeout: float = 30.0,
+        start_route_index: int = 0,
     ):
         if vehicle is None:
             raise ValueError("vehicle must not be None.")
@@ -49,6 +50,10 @@ class RouteController:
         if min_curve_speed > cruise_speed:
             raise ValueError("min_curve_speed must be <= cruise_speed.")
 
+        # DEBUG-ONLY (--debug-start-route-index). Production always uses 0.
+        if not 0 <= int(start_route_index) < len(dense_route) - 1:
+            raise ValueError(f"start_route_index {start_route_index} out of range for a {len(dense_route)}-waypoint route.")
+
         self.vehicle = vehicle
         self.dense_route = dense_route
 
@@ -63,7 +68,9 @@ class RouteController:
         self.stuck_speed_threshold = float(stuck_speed_threshold)
         self.stuck_timeout = float(stuck_timeout)
 
-        self.route_index = 0
+        self.start_route_index = int(start_route_index)
+
+        self.route_index = self.start_route_index
         self.progress = 0.0
         self.goal_distance = float("inf")
 
@@ -73,6 +80,11 @@ class RouteController:
         self._stuck_since = None
         self._is_stuck = False
 
+        # Observation only (stall diagnostics): which branch of
+        # update_stuck_state() last cleared the stuck timer, None while
+        # the timer is running.
+        self.last_stuck_reset_reason = None
+
         self.agent = BasicAgent(self.vehicle, target_speed=self.cruise_speed)
 
         self._set_global_plan()
@@ -81,7 +93,12 @@ class RouteController:
     def _set_global_plan(self):
         local_planner = self.agent.get_local_planner()
 
-        local_planner.set_global_plan(self.dense_route, stop_waypoint_creation=True, clean_queue=True)
+        # A mid-route debug start must not hand the local planner the
+        # waypoints behind the ego, or BasicAgent would drive back to
+        # dense_route[0]. start_route_index == 0 passes the route unchanged.
+        plan = self.dense_route if self.start_route_index == 0 else self.dense_route[self.start_route_index:]
+
+        local_planner.set_global_plan(plan, stop_waypoint_creation=True, clean_queue=True)
 
 
     def _configure_traffic_light_policy(self):
@@ -198,11 +215,13 @@ class RouteController:
         if self.is_waiting_for_red_light():
             self._stuck_since = None
             self._is_stuck = False
+            self.last_stuck_reset_reason = "red_light"
             return
 
         if control.brake > 0.1:
             self._stuck_since = None
             self._is_stuck = False
+            self.last_stuck_reset_reason = "brake>0.1"
             return
 
         trying_to_move = control.throttle > 0.2 and control.brake < 0.1
@@ -217,10 +236,15 @@ class RouteController:
             stopped_duration = now - self._stuck_since
         
             self._is_stuck = stopped_duration >= self.stuck_timeout
+            self.last_stuck_reset_reason = None
 
         else:
             self._stuck_since = None
             self._is_stuck = False
+            self.last_stuck_reset_reason = (
+                f"speed>={self.stuck_speed_threshold:g}" if speed >= self.stuck_speed_threshold
+                else "not_trying_to_move(throttle<=0.2)"
+            )
 
     def is_stuck(self) -> bool:
         return self._is_stuck

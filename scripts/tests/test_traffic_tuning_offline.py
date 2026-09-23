@@ -126,7 +126,7 @@ class TrafficLightConfigTest(unittest.TestCase):
     def test_default_durations(self):
         self.assertEqual(cfg.TRAFFIC_LIGHT.GREEN_TIME_S, 8.0)
         self.assertEqual(cfg.TRAFFIC_LIGHT.YELLOW_TIME_S, 2.0)
-        self.assertEqual(cfg.TRAFFIC_LIGHT.RED_TIME_S, 8.0)
+        self.assertEqual(cfg.TRAFFIC_LIGHT.RED_TIME_S, 1.0)
 
 
 class FakeTrafficLight:
@@ -223,7 +223,7 @@ class ConfigureTrafficLightsTest(unittest.TestCase):
         self.assertEqual(printed.count("[TrafficLight] configured"), 1)
         self.assertIn("green=8.0s", printed)
         self.assertIn("yellow=2.0s", printed)
-        self.assertIn("red=8.0s", printed)
+        self.assertIn("red=1.0s", printed)
 
 
 class TrafficLightGroupStateUntouchedTest(unittest.TestCase):

@@ -388,7 +388,20 @@ cfg.SPAWN.FRAME_OBJECT_MAX_PRUNE_PER_UPDATE = 2
 cfg.TRAFFIC_LIGHT = EasyDict()
 cfg.TRAFFIC_LIGHT.GREEN_TIME_S = 8.0
 cfg.TRAFFIC_LIGHT.YELLOW_TIME_S = 2.0
-cfg.TRAFFIC_LIGHT.RED_TIME_S = 8.0
+cfg.TRAFFIC_LIGHT.RED_TIME_S = 1.0
+
+#################################################################
+### Route no-progress watchdog (canonical geometry only)
+### Route-level production safety guard, separate from the controller's
+### vehicle stuck detector. Fails the canonical route when ego_s (dense
+### route arc length) has not advanced MIN_PROGRESS_M for
+### NO_PROGRESS_TIMEOUT_S simulation seconds.
+#################################################################
+
+cfg.ROUTE_WATCHDOG = EasyDict()
+cfg.ROUTE_WATCHDOG.ENABLED = True
+cfg.ROUTE_WATCHDOG.NO_PROGRESS_TIMEOUT_S = 120.0
+cfg.ROUTE_WATCHDOG.MIN_PROGRESS_M = 2.0
 
 #################################################################
 ### Annotation
