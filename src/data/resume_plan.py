@@ -16,9 +16,44 @@ The source condition (day_clear) is NEVER scheduled for replay: its RGB comes
 from the canonical run itself. Only the other weathers are replayed.
 """
 
+import json
 import os
 
 from src.data.layout import condition_dir, geometry_dir, is_complete
+
+
+def _check_recording_hz_compatibility(route_path, expected_recording_hz):
+    """
+    10 Hz-recording task (CLAUDE.md section 17): never silently resume a
+    route directory whose canonical geometry was recorded at a different
+    sample rate than the current cfg.RECORDING.FPS.
+
+    Pre-this-task datasets have no "recording_hz" field at all -- they
+    recorded every simulation tick (recording_hz == fps); a missing field
+    is treated as that legacy value, not as "unknown/skip the check".
+    """
+
+    sequence_path = os.path.join(geometry_dir(route_path), "sequence.json")
+
+    if not os.path.isfile(sequence_path):
+        # geometry_ok already requires a COMPLETE marker; a missing
+        # sequence.json alongside it is a different (pre-existing) failure
+        # mode, not this check's job to diagnose.
+        return
+
+    with open(sequence_path, "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    existing_hz = data.get("recording_hz", data.get("fps"))
+
+    if existing_hz is None or abs(float(existing_hz) - float(expected_recording_hz)) > 1e-6:
+        raise RuntimeError(
+            f"Resume blocked: '{sequence_path}' was recorded at "
+            f"recording_hz={existing_hz}, but the current config is "
+            f"cfg.RECORDING.FPS={expected_recording_hz}. Mixing sampling "
+            f"rates within one route directory is not allowed -- use a "
+            f"different --output-root or --overwrite this route."
+        )
 
 
 def plan_route_work(
@@ -27,6 +62,7 @@ def plan_route_work(
     source_condition,
     rerender_conditions=(),
     overwrite=False,
+    expected_recording_hz=None,
 ):
     """
     Returns a dict:
@@ -44,6 +80,12 @@ def plan_route_work(
                             (or those in rerender_conditions) are replayed.
     rerender_conditions  -> replay exactly these (geometry untouched); the
                             source condition cannot be re-rendered by replay.
+
+    expected_recording_hz: when given and geometry is COMPLETE (and
+        --overwrite is not set), the existing geometry/sequence.json's
+        recording_hz must match this value or a RuntimeError is raised --
+        resuming a 20 Hz-recorded route under a 10 Hz config (or vice
+        versa) fails loudly instead of silently mixing sample rates.
     """
 
     rerender = set(rerender_conditions or [])
@@ -69,6 +111,9 @@ def plan_route_work(
         is_complete(geometry_dir(route_path))
         and is_complete(condition_dir(route_path, source_condition))
     )
+
+    if geometry_ok and not overwrite and expected_recording_hz is not None:
+        _check_recording_hz_compatibility(route_path, expected_recording_hz)
 
     if overwrite or not geometry_ok:
         return {

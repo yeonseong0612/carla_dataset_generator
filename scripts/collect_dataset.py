@@ -168,6 +168,7 @@ from src.simulation.replay import (
     WorldStateReplayer,
     weather_to_dict,
 )
+from src.simulation.timing import is_record_tick, record_stride_ticks
 from src.simulation.weather import WEATHER_WIND_INTENSITY, apply_weather
 
 
@@ -254,6 +255,18 @@ def parse_args():
         "--max-frames",
         type=int,
         default=MAX_FRAMES_PER_SEQUENCE,
+        help=(
+            "Maximum number of SAVED dataset samples (10 Hz), not "
+            "simulation ticks. The world still ticks/controls/drives "
+            "traffic at 20 Hz (cfg.SIMULATION.FPS); "
+            "cfg.RECORDING.STRIDE_TICKS simulation ticks elapse per saved "
+            "sample. E.g. --max-frames 100 bounds the run to ~10 "
+            "simulation seconds (100 samples x 0.1 s), which used to be "
+            "expressed as --max-frames 200 at the old 20 Hz recording "
+            "rate -- divide any old --max-frames value by "
+            "cfg.RECORDING.STRIDE_TICKS to get the equivalent under this "
+            "flag."
+        ),
     )
 
     parser.add_argument(
@@ -835,6 +848,7 @@ def write_condition_json(
             "rgb_only_replay": is_replay,
             "sensors_saved": list(REPLAY_SENSOR_PROFILE),
             "num_frames": num_frames,
+            "recording_hz": float(cfg.RECORDING.FPS),
             "replay_validation": replay_validation,
             "calibration_check": calibration_check,
         },
@@ -1301,12 +1315,35 @@ def generate_canonical_geometry(
         last_visible_population = 0
         last_buffer_population = 0
 
-        for local_frame_id in range(
-            max_frames
+        # 20 Hz simulation / 10 Hz recording (CLAUDE.md): every world tick
+        # below still runs control + Traffic Manager + Gamma maintenance;
+        # dataset writes (collector/metadata/world_state/annotation) only
+        # happen on every record_stride-th tick. simulation_tick_idx is the
+        # 20 Hz tick counter (0-indexed from this loop's first tick, NOT
+        # the CARLA server frame and NOT the dataset frame_id);
+        # record_frame_id is the contiguous 10 Hz dataset sample id
+        # (== saved_frames at the moment it is assigned). --max-frames now
+        # bounds saved dataset SAMPLES, not simulation ticks.
+
+        record_stride = record_stride_ticks(cfg)
+
+        assert cfg.SPAWN.UPDATE_INTERVAL_FRAMES % record_stride == 0, (
+            "cfg.SPAWN.UPDATE_INTERVAL_FRAMES must stay a multiple of the "
+            "record stride: background-traffic maintenance runs on the "
+            "20 Hz simulation clock (never slowed down by recording), and "
+            "this invariant is what guarantees a fresh camera-valid "
+            "annotation count is always available on the ticks it fires."
+        )
+
+        max_simulation_ticks = max_frames * record_stride
+
+        for simulation_tick_idx in range(
+            max_simulation_ticks
         ):
 
             # ------------------------------------------------
-            # Vehicle control
+            # Vehicle control (every simulation tick -- 20 Hz, never
+            # gated on recording)
             # ------------------------------------------------
 
             control = (
@@ -1348,22 +1385,8 @@ def generate_canonical_geometry(
             )
 
             # ------------------------------------------------
-            # Sensor packet
-            # ------------------------------------------------
-
-            packet = (
-                collector.collect_frame(
-                    carla_frame
-                )
-            )
-
-            collector.save_frame(
-                local_frame_id,
-                packet,
-            )
-
-            # ------------------------------------------------
-            # Controller / route status
+            # Controller / route status (every simulation tick: ego can
+            # complete or get stuck between two recorded samples)
             # ------------------------------------------------
 
             route_status = (
@@ -1371,83 +1394,112 @@ def generate_canonical_geometry(
                 .get_status()
             )
 
-            # ------------------------------------------------
-            # Metadata
-            # ------------------------------------------------
-
-            metadata.write_frame(
-                frame_id=(
-                    local_frame_id
-                ),
-                carla_frame=(
-                    carla_frame
-                ),
-                timestamp=(
-                    timestamp
-                ),
-                ego=ego,
-                route_status=(
-                    route_status
-                ),
+            record_tick = is_record_tick(
+                simulation_tick_idx, record_stride,
             )
 
-            # ------------------------------------------------
-            # World state (exact scene of THIS frame, recorded
-            # before the spawn manager below mutates the actor
-            # set and before annotation so labels can reference
-            # logical ids)
-            # ------------------------------------------------
+            record_frame_id = None
+            annotation_counts = None
 
-            world_state_recorder.record_frame(
-                local_frame_id,
-                carla_frame,
-                timestamp,
-                snapshot,
-                ego,
-                spawn_manager.managed_actors,
-            )
+            if record_tick:
 
-            # ------------------------------------------------
-            # Annotation
-            # ------------------------------------------------
+                record_frame_id = saved_frames
 
-            annotation_counts = (
-                annotation_writer
-                .write_frame(
-                    local_frame_id,
-                    world,
-                    ego,
-                    depth_raw=packet["depth"],
+                # --------------------------------------------
+                # Sensor packet (only the sensors that actually emit on
+                # this tick -- cfg.RECORDING.SAMPLE_INTERVAL_SECONDS
+                # sensor_tick, see src/sensors/*)
+                # --------------------------------------------
+
+                packet = (
+                    collector.collect_frame(
+                        carla_frame
+                    )
                 )
-            )
 
-            saved_frames += 1
+                collector.save_frame(
+                    record_frame_id,
+                    packet,
+                )
 
-            # ------------------------------------------------
-            # Diagnostic only (CLAUDE.md PART F): initial stationary
-            # traffic ratio at a few early recorded frames. Read-only,
-            # never spawns/despawns/destroys anything.
-            # ------------------------------------------------
+                # --------------------------------------------
+                # Metadata
+                # --------------------------------------------
 
-            log_stationary_vehicle_diagnostic(
-                local_frame_id, spawn_manager.managed_actors,
-            )
+                metadata.write_frame(
+                    frame_id=(
+                        record_frame_id
+                    ),
+                    carla_frame=(
+                        carla_frame
+                    ),
+                    timestamp=(
+                        timestamp
+                    ),
+                    ego=ego,
+                    route_status=(
+                        route_status
+                    ),
+                )
+
+                # --------------------------------------------
+                # World state (exact scene of THIS recorded sample,
+                # recorded before the spawn manager below mutates the
+                # actor set and before annotation so labels can
+                # reference logical ids)
+                # --------------------------------------------
+
+                world_state_recorder.record_frame(
+                    record_frame_id,
+                    carla_frame,
+                    timestamp,
+                    snapshot,
+                    ego,
+                    spawn_manager.managed_actors,
+                )
+
+                # --------------------------------------------
+                # Annotation
+                # --------------------------------------------
+
+                annotation_counts = (
+                    annotation_writer
+                    .write_frame(
+                        record_frame_id,
+                        world,
+                        ego,
+                        depth_raw=packet["depth"],
+                    )
+                )
+
+                saved_frames += 1
+
+                # --------------------------------------------
+                # Diagnostic only (CLAUDE.md PART F): initial stationary
+                # traffic ratio at a few early recorded samples.
+                # Read-only, never spawns/despawns/destroys anything.
+                # --------------------------------------------
+
+                log_stationary_vehicle_diagnostic(
+                    record_frame_id, spawn_manager.managed_actors,
+                )
 
             # ------------------------------------------------
             # Phase 2: dynamic density maintenance
             #
-            # Runs after this frame's sensors/annotation are already
-            # captured and saved, so any actor spawned/despawned here
-            # only takes effect starting from the *next* world.tick() --
-            # it never disturbs the frame just collected.
+            # Runs on simulation_tick_idx's own 20 Hz cadence
+            # (cfg.SPAWN.UPDATE_INTERVAL_FRAMES simulation ticks) --
+            # NEVER slowed down by the recording stride (CLAUDE.md
+            # section 12). The assert above guarantees every tick this
+            # fires on is also a record tick, so a fresh camera-valid
+            # annotation count is always available here.
             #
-            # Computed before the CSV write below (not after, as in the
-            # prior frame-object-Gamma task) so spawned/pruned/despawned-
-            # this-frame and the cumulative_* columns can reflect THIS
-            # update if one ran on this frame.
+            # Runs after this tick's sensors/annotation are already
+            # captured and saved (when it is a record tick), so any actor
+            # spawned/despawned here only takes effect starting from the
+            # *next* world.tick() -- it never disturbs the sample just
+            # collected.
             # ------------------------------------------------
-
-            current_object_count = get_annotation_candidate_count(annotation_counts)
 
             spawned_this_frame = 0
             pruned_this_frame = 0
@@ -1455,11 +1507,17 @@ def generate_canonical_geometry(
 
             if (
                 spawn_manager is not None
-                and local_frame_id % cfg.SPAWN.UPDATE_INTERVAL_FRAMES == 0
+                and simulation_tick_idx % cfg.SPAWN.UPDATE_INTERVAL_FRAMES == 0
             ):
+                current_object_count = (
+                    get_annotation_candidate_count(annotation_counts)
+                    if annotation_counts is not None
+                    else None
+                )
+
                 if background_policy == "canonical":
                     update_snapshot = spawn_manager.update(
-                        local_frame_id,
+                        simulation_tick_idx,
                         current_object_count=current_object_count,
                     )
                     spawned_this_frame = update_snapshot["spawned"]
@@ -1469,21 +1527,23 @@ def generate_canonical_geometry(
                     last_buffer_population = update_snapshot["buffer_population"]
                 else:
                     spawn_manager.update(
-                        local_frame_id
+                        simulation_tick_idx
                     )
 
             # ------------------------------------------------
-            # Frame-Level Gamma Object Count Policy: per-frame
-            # target/actual/population/spawn-prune-despawn log
-            # (every frame; spawned/pruned/despawned-this-frame are 0 on
-            # frames where spawn_manager.update() didn't run this frame).
+            # Frame-Level Gamma Object Count Policy: per-record-sample
+            # target/actual/population/spawn-prune-despawn log. Only
+            # written on record ticks (current_object_count/
+            # annotation_counts are only fresh then); this diagnostic
+            # file is not a dataset modality, so sampling it at 10 Hz
+            # instead of 20 Hz changes nothing CLAUDE.md tracks.
             # ------------------------------------------------
 
-            if frame_object_csv_writer is not None:
+            if record_tick and frame_object_csv_writer is not None:
                 frame_object_csv_writer.writerow([
-                    local_frame_id,
-                    spawn_manager.frame_object_schedule.target_for_frame(local_frame_id),
-                    current_object_count,
+                    record_frame_id,
+                    spawn_manager.frame_object_schedule.target_for_frame(simulation_tick_idx),
+                    get_annotation_candidate_count(annotation_counts),
                     len(spawn_manager.managed_actors),
                     last_visible_population,
                     last_buffer_population,
@@ -1500,7 +1560,8 @@ def generate_canonical_geometry(
             # ------------------------------------------------
 
             if (
-                saved_frames
+                record_tick
+                and saved_frames
                 % FLUSH_INTERVAL
                 == 0
             ):
@@ -1515,8 +1576,8 @@ def generate_canonical_geometry(
             # Status
             # ------------------------------------------------
 
-            if (
-                local_frame_id == 0
+            if record_tick and (
+                record_frame_id == 0
                 or saved_frames % 100 == 0
             ):
 
@@ -1584,7 +1645,7 @@ def generate_canonical_geometry(
 
             if not truncate_ok:
                 raise RuntimeError(
-                    f"Maximum frame count "
+                    f"Maximum sample count "
                     f"{max_frames} reached "
                     "before route completion."
                 )
@@ -1992,6 +2053,15 @@ def replay_condition(
 
         saved_frames = 0
 
+        # Canonical world_state samples are already 10 Hz (one per
+        # cfg.RECORDING.SAMPLE_INTERVAL_SECONDS); this world still ticks at
+        # 20 Hz (fixed_delta_seconds unchanged, CLAUDE.md section 13), and
+        # the replay RGB sensors emit at the same 10 Hz cadence (sensor_tick
+        # = cfg.RECORDING.SAMPLE_INTERVAL_SECONDS, see src/sensors/camera.py)
+        # -- so each replay sample needs record_stride world ticks before
+        # the sensors actually produce a new callback.
+        record_stride = record_stride_ticks(cfg)
+
         for frame_id in range(
             num_frames
         ):
@@ -2006,9 +2076,25 @@ def replay_condition(
                 frame_state
             )
 
-            carla_frame = (
-                world.tick()
-            )
+            # frame_id == 0's pose has already been held since before the
+            # warmup loop above (same first_frame transform reapplied every
+            # warmup tick), so the immediate next tick is already a capture
+            # tick for the 10 Hz RGB sensors -- identical warmup-tick-count
+            # parity to the canonical run's own frame 0 (both are "1 resolve
+            # tick + WARMUP ticks" before their main loop, see
+            # generate_canonical_geometry()). Every later frame's transform
+            # changes right here, so it needs the full record_stride ticks
+            # (one settling tick + one capturing tick, at stride 2) before
+            # the RGB sensors emit under the new pose. The settling tick(s)
+            # send no new transform (physics stays off, so the actor does
+            # not move) and nothing is captured/saved for them (CLAUDE.md
+            # section 13) -- only the LAST tick's carla_frame is collected.
+            ticks_this_frame = 1 if frame_id == 0 else record_stride
+
+            carla_frame = None
+
+            for _ in range(ticks_this_frame):
+                carla_frame = world.tick()
 
             packet = (
                 collector.collect_frame(
@@ -2216,6 +2302,7 @@ def process_route(
         source_condition,
         rerender_conditions=args.rerender_conditions,
         overwrite=args.overwrite,
+        expected_recording_hz=cfg.RECORDING.FPS,
     )
 
     # --------------------------------------------------------
@@ -2458,6 +2545,7 @@ def main():
             conditions,
             source_condition,
             rerender_conditions=args.rerender_conditions,
+            expected_recording_hz=cfg.RECORDING.FPS,
         )
 
     # --------------------------------------------------------

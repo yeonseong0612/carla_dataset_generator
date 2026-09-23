@@ -83,7 +83,10 @@ class SensorRig:
         for sensor_name, cfg_attr in RADAR_RIG_SPECS:
             if wanted is None or sensor_name in wanted:
                 radar_cfg = getattr(self.cfg.SENSOR, cfg_attr)
-                self._attach_sensor(sensor_name, create_radar_blueprint(self.world, radar_cfg), create_radar_transform(radar_cfg))
+                radar_blueprint = create_radar_blueprint(
+                    self.world, radar_cfg, sensor_tick=self.cfg.RECORDING.SAMPLE_INTERVAL_SECONDS,
+                )
+                self._attach_sensor(sensor_name, radar_blueprint, create_radar_transform(radar_cfg))
 
         if wanted is not None:
             unknown = wanted - set(self.sensors)

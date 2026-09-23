@@ -65,6 +65,10 @@ from src.simulation.environment import (  # noqa: E402
 )
 
 EXPECTED_VERSION_DEFAULT = "0.9.15"
+# 10 Hz-recording task: saved timestamps are cfg.RECORDING.SAMPLE_INTERVAL_
+# SECONDS apart (0.1s), not cfg.SIMULATION.FIXED_DELTA_SECONDS (0.05s) --
+# world/controller/traffic still tick at 20 Hz, only every other tick is
+# saved. See check_timestamps() below.
 TIMESTAMP_TOLERANCE_S = 0.005  # fixed_delta_seconds is exact in sync mode
 
 
@@ -232,7 +236,7 @@ def check_timestamps(report, geometry_root):
     path = os.path.join(geometry_root, "timestamps.csv")
 
     if not os.path.isfile(path):
-        report.add("D", "consecutive frame timestamp spacing ~= fixed_delta_seconds", False, f"missing {path}")
+        report.add("D", "consecutive frame timestamp spacing ~= recording_interval_seconds", False, f"missing {path}")
         return
 
     import csv
@@ -240,17 +244,19 @@ def check_timestamps(report, geometry_root):
         rows = list(csv.DictReader(f))
 
     if len(rows) < 2:
-        report.add("D", "consecutive frame timestamp spacing ~= fixed_delta_seconds", False, "fewer than 2 rows")
+        report.add("D", "consecutive frame timestamp spacing ~= recording_interval_seconds", False, "fewer than 2 rows")
         return
 
     timestamps = [float(r["timestamp"]) for r in rows]
     deltas = np.diff(timestamps)
-    expected = cfg.SIMULATION.FIXED_DELTA_SECONDS
+    # 10 Hz-recording task: saved samples are cfg.RECORDING.STRIDE_TICKS
+    # simulation ticks apart, not one tick apart.
+    expected = cfg.RECORDING.SAMPLE_INTERVAL_SECONDS
     max_err = float(np.max(np.abs(deltas - expected)))
     ok = max_err <= TIMESTAMP_TOLERANCE_S
 
     report.add(
-        "D", "consecutive frame timestamp spacing ~= fixed_delta_seconds", ok,
+        "D", "consecutive frame timestamp spacing ~= recording_interval_seconds", ok,
         f"expected={expected:.4f}s max_deviation={max_err:.5f}s over {len(deltas)} intervals",
     )
 
@@ -548,7 +554,7 @@ def main():
             check_output_completeness(report, route_path, geometry_root, args.conditions, "day_clear", args.frames)
         else:
             for check_id, description in (
-                ("D", "consecutive frame timestamp spacing ~= fixed_delta_seconds"),
+                ("D", "consecutive frame timestamp spacing ~= recording_interval_seconds"),
                 ("E", "camera/ego/calibration extrinsic consistency"),
                 ("F", "object 3D->image projection within image bounds"),
                 ("G", "replay contract"),

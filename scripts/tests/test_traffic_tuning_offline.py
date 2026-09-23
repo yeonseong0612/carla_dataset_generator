@@ -78,11 +78,11 @@ class PreRecordWarmupPlacementTest(unittest.TestCase):
 
     def test_warmup_runs_before_the_recording_loop(self):
         warmup_index = self.source.index("cfg.SPAWN.PRE_RECORD_WARMUP_TICKS")
-        loop_index = self.source.index("for local_frame_id in range(")
+        loop_index = self.source.index("for simulation_tick_idx in range(")
         self.assertLess(warmup_index, loop_index)
 
     def test_no_dataset_write_call_precedes_the_recording_loop(self):
-        loop_index = self.source.index("for local_frame_id in range(")
+        loop_index = self.source.index("for simulation_tick_idx in range(")
         prefix = self.source[:loop_index]
 
         for forbidden in (
@@ -96,13 +96,13 @@ class PreRecordWarmupPlacementTest(unittest.TestCase):
     def test_frame_recording_loop_starts_at_zero(self):
         # range(max_frames) with no explicit start -- frame_id starts at 0
         # right after warm-up, never offset by the warm-up tick count.
-        self.assertIn("for local_frame_id in range(\n            max_frames\n        ):", self.source)
+        self.assertIn("for simulation_tick_idx in range(\n            max_simulation_ticks\n        ):", self.source)
 
     def test_ego_is_not_driven_during_warmup(self):
         # Between the warmup line and the recording loop, ego must not be
         # controlled/moved (CLAUDE.md B-3: no forced move + teleport-back).
         warmup_index = self.source.index("cfg.SPAWN.PRE_RECORD_WARMUP_TICKS")
-        loop_index = self.source.index("for local_frame_id in range(")
+        loop_index = self.source.index("for simulation_tick_idx in range(")
         between = self.source[warmup_index:loop_index]
 
         self.assertNotIn("ego.apply_control(", between)
@@ -111,7 +111,7 @@ class PreRecordWarmupPlacementTest(unittest.TestCase):
 
     def test_sensor_queue_is_flushed_after_warmup(self):
         warmup_index = self.source.index("cfg.SPAWN.PRE_RECORD_WARMUP_TICKS")
-        loop_index = self.source.index("for local_frame_id in range(")
+        loop_index = self.source.index("for simulation_tick_idx in range(")
         between = self.source[warmup_index:loop_index]
 
         self.assertIn("clear_queues", between)

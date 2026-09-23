@@ -8,7 +8,7 @@ CAMERA_TYPES = {
 }
 
 
-def create_camera_blueprint(world, sensor_type, width, height, fov):
+def create_camera_blueprint(world, sensor_type, width, height, fov, sensor_tick=0.0):
     if sensor_type not in CAMERA_TYPES:
         raise ValueError(f"Unsupported camera type: {sensor_type}")
 
@@ -21,7 +21,7 @@ def create_camera_blueprint(world, sensor_type, width, height, fov):
     blueprint.set_attribute("image_size_x", str(width))
     blueprint.set_attribute("image_size_y", str(height))
     blueprint.set_attribute("fov", str(fov))
-    blueprint.set_attribute("sensor_tick", "0.0")
+    blueprint.set_attribute("sensor_tick", str(sensor_tick))
 
     return blueprint
 
@@ -57,19 +57,31 @@ def create_right_camera_transform(cfg):
 
 
 def create_rgb_blueprint(world, cfg):
-    return create_camera_blueprint(world, "rgb", cfg.SENSOR.CAMERA.WIDTH, cfg.SENSOR.CAMERA.HEIGHT, cfg.SENSOR.CAMERA.FOV)
+    return create_camera_blueprint(
+        world, "rgb", cfg.SENSOR.CAMERA.WIDTH, cfg.SENSOR.CAMERA.HEIGHT, cfg.SENSOR.CAMERA.FOV,
+        sensor_tick=cfg.RECORDING.SAMPLE_INTERVAL_SECONDS,
+    )
 
 
 def create_depth_blueprint(world, cfg):
-    return create_camera_blueprint(world, "depth", cfg.SENSOR.CAMERA.WIDTH, cfg.SENSOR.CAMERA.HEIGHT, cfg.SENSOR.CAMERA.FOV)
+    return create_camera_blueprint(
+        world, "depth", cfg.SENSOR.CAMERA.WIDTH, cfg.SENSOR.CAMERA.HEIGHT, cfg.SENSOR.CAMERA.FOV,
+        sensor_tick=cfg.RECORDING.SAMPLE_INTERVAL_SECONDS,
+    )
 
 
 def create_optical_flow_blueprint(world, cfg):
-    return create_camera_blueprint(world, "optical_flow", cfg.SENSOR.CAMERA.WIDTH, cfg.SENSOR.CAMERA.HEIGHT, cfg.SENSOR.CAMERA.FOV)
+    return create_camera_blueprint(
+        world, "optical_flow", cfg.SENSOR.CAMERA.WIDTH, cfg.SENSOR.CAMERA.HEIGHT, cfg.SENSOR.CAMERA.FOV,
+        sensor_tick=cfg.RECORDING.SAMPLE_INTERVAL_SECONDS,
+    )
 
 
 def create_semantic_blueprint(world, cfg):
-    return create_camera_blueprint(world, "semantic", cfg.SENSOR.CAMERA.WIDTH, cfg.SENSOR.CAMERA.HEIGHT, cfg.SENSOR.CAMERA.FOV)
+    return create_camera_blueprint(
+        world, "semantic", cfg.SENSOR.CAMERA.WIDTH, cfg.SENSOR.CAMERA.HEIGHT, cfg.SENSOR.CAMERA.FOV,
+        sensor_tick=cfg.RECORDING.SAMPLE_INTERVAL_SECONDS,
+    )
 
 
 def create_camera_rig_blueprints(world, cfg):

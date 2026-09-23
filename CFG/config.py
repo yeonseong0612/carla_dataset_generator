@@ -16,6 +16,28 @@ cfg.SIMULATION = EasyDict()
 cfg.SIMULATION.FPS = 20
 cfg.SIMULATION.FIXED_DELTA_SECONDS = 1.0 / cfg.SIMULATION.FPS
 
+#################################################################
+### Dataset recording rate (10 Hz-recording task)
+###
+### World / physics / controller / Traffic Manager / Gamma all stay on
+### cfg.SIMULATION's 20 Hz clock above -- untouched by this section. Only
+### the final saved dataset SAMPLE rate is lower: every RECORD_STRIDE_TICKS
+### -th world tick is written to disk (RGB/depth/semantic/flow/LiDAR/radar/
+### annotation/world_state/pose), the ticks in between still run controller/
+### traffic/physics but are never collected or saved. See
+### src/simulation/timing.py is_record_tick() / scripts/collect_dataset.py.
+#################################################################
+cfg.RECORDING = EasyDict()
+cfg.RECORDING.FPS = 10
+cfg.RECORDING.SAMPLE_INTERVAL_SECONDS = 1.0 / cfg.RECORDING.FPS
+
+# = SAMPLE_INTERVAL_SECONDS / FIXED_DELTA_SECONDS (0.1 / 0.05 = 2). Must be
+# an exact integer -- RECORDING.FPS is required to evenly divide
+# SIMULATION.FPS; see the assertion in src/simulation/timing.py.
+cfg.RECORDING.STRIDE_TICKS = round(
+    cfg.RECORDING.SAMPLE_INTERVAL_SECONDS / cfg.SIMULATION.FIXED_DELTA_SECONDS
+)
+
 cfg.PROJECT = EasyDict()
 cfg.PROJECT.ROOT = str(Path(__file__).resolve().parents[1])
 
@@ -62,8 +84,23 @@ cfg.SENSOR.LIDAR.CHANNELS = 16
 
 cfg.SENSOR.LIDAR.RANGE = 130.0
 
+# 10 Hz-recording task: LiDAR now captures once per cfg.RECORDING
+# sample (sensor_tick = RECORDING.SAMPLE_INTERVAL_SECONDS, see
+# src/sensors/lidar.py), so rotation_frequency is set to RECORDING.FPS (was
+# SIMULATION.FPS = 20) -- one full 360 deg sweep per saved LiDAR sample,
+# same "one callback = one complete scan" semantics as before, just at the
+# new 10 Hz sample rate instead of the old 20 Hz one.
+#
+# Verified directly against a live CARLA 0.9.16 server (not assumed from
+# docs, per CLAUDE.md section 7): scaling sensor_tick and rotation_frequency
+# down together like this keeps the PER-SCAN point count statistically
+# unchanged from the old 20 Hz config (~4.68k pts/scan in a static Town01
+# control scan either way) -- each delivered scan is still exactly one full
+# rotation over the same scene, so it carries the same point count; only
+# the callback rate halves (20 Hz -> 10 Hz), which is the actual efficiency
+# win. points_per_second itself is unchanged.
 cfg.SENSOR.LIDAR.POINTS_PER_SECOND = 200000
-cfg.SENSOR.LIDAR.ROTATION_FREQUENCY = float(cfg.SIMULATION.FPS)
+cfg.SENSOR.LIDAR.ROTATION_FREQUENCY = float(cfg.RECORDING.FPS)
 
 cfg.SENSOR.LIDAR.HORIZONTAL_FOV = 180.0
 

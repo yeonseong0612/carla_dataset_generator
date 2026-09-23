@@ -3,6 +3,8 @@ import csv
 import json
 import math
 
+from src.simulation.timing import record_stride_ticks
+
 
 class MetadataWriter:
     def __init__(self, sequence_root, map_name, sequence_id, cfg, route_id=None, condition=None, spawn_info=None, sequence_extra=None):
@@ -176,6 +178,14 @@ class MetadataWriter:
 
             "fixed_delta_seconds":
                 self.cfg.SIMULATION.FIXED_DELTA_SECONDS,
+
+            # 10 Hz-recording task: world/controller/traffic stay at
+            # simulation_hz; only the saved dataset sample rate is
+            # recording_hz. See src/simulation/timing.py.
+            "simulation_hz": float(self.cfg.SIMULATION.FPS),
+            "recording_hz": float(self.cfg.RECORDING.FPS),
+            "recording_interval_seconds": self.cfg.RECORDING.SAMPLE_INTERVAL_SECONDS,
+            "recording_stride_ticks": record_stride_ticks(self.cfg),
 
             "random_seed":
                 self.cfg.RANDOM.SEED,
