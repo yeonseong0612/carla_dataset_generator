@@ -66,6 +66,7 @@ import os
 import shutil
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import carla
@@ -2358,6 +2359,7 @@ def process_route(
             print(
                 f"Reason    : {exc}"
             )
+            traceback.print_exc()
             print(
                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
             )
@@ -2445,6 +2447,7 @@ def process_route(
             print(
                 f"Reason    : {exc}"
             )
+            traceback.print_exc()
             print(
                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
             )

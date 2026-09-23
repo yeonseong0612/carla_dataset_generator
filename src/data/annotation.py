@@ -7,6 +7,7 @@ import numpy as np
 
 from src.data.projection import CameraProjector
 from src.data.collector import depth_to_numpy
+from src.simulation.actor_lifecycle import is_stale_actor_error, require_ego_alive
 
 SEMANTIC_MAP = {
     0: ("unlabelled", (0, 0, 0)),
@@ -482,6 +483,8 @@ class AnnotationWriter:
         src.data.collector.depth_to_numpy (reused, not re-implemented).
         """
 
+        require_ego_alive(ego, f"annotation frame {local_frame_id}")
+
         depth_m = depth_to_numpy(depth_raw) if (self.projector is not None and depth_raw is not None) else None
 
         raw_candidates = []  # every distance-filtered actor, before camera-valid filtering
@@ -490,8 +493,26 @@ class AnnotationWriter:
 
         targets = self._get_target_actors(world, ego)
 
+        stale_actor_omissions = []
+
         for actor, category, subcategory in targets:
-            annotation = self._make_annotation(actor, category, subcategory, ego, depth_m)
+            # A background actor that left the server registry after the
+            # snapshot (its get_light_state() RPC fails) is dropped from this
+            # frame as a whole -- never a partial annotation. Ego reads in
+            # _make_annotation are snapshot-local; if one still fails the ego
+            # is gone, which require_ego_alive turns into a fatal error.
+            try:
+                annotation = self._make_annotation(actor, category, subcategory, ego, depth_m)
+            except RuntimeError as exc:
+                if not is_stale_actor_error(exc):
+                    raise
+                require_ego_alive(ego, f"annotation frame {local_frame_id}")
+                stale_actor_omissions.append(int(actor.id))
+                print(
+                    f"[Annotation] frame={local_frame_id} omitted stale "
+                    f"background actor id={actor.id} ({category})"
+                )
+                continue
 
             if annotation is None:
                 continue
@@ -534,6 +555,10 @@ class AnnotationWriter:
             # re-run projection to see why something was excluded.
             "rejected_objects": rejected_objects,
         }
+
+        # Only present when non-empty (see world_state.py record_frame).
+        if stale_actor_omissions:
+            data["stale_actor_omissions"] = stale_actor_omissions
 
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)

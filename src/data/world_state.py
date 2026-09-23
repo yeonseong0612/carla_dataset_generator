@@ -23,6 +23,12 @@ import json
 import math
 import os
 
+from src.simulation.actor_lifecycle import (
+    EgoActorLostError,
+    is_stale_actor_error,
+    require_ego_alive,
+)
+
 
 WORLD_STATE_DIRNAME = "world_state"
 ACTORS_FILENAME = "actors.json"
@@ -191,19 +197,40 @@ class WorldStateRecorder:
         return logical_id
 
     def _actor_record(self, actor, snapshot, category):
+        """
+        All fields or None: a background actor that left the server registry
+        mid-serialization (see src/simulation/actor_lifecycle.py) is omitted
+        from this frame as a whole, never written as a partial record. Any
+        other RuntimeError propagates.
+        """
+
         actor_snapshot = snapshot.find(actor.id)
 
         if actor_snapshot is None:
             return None
 
+        try:
+            transform = transform_to_dict(actor_snapshot.get_transform())
+            velocity = vector_to_dict(actor_snapshot.get_velocity())
+            angular_velocity = vector_to_dict(actor_snapshot.get_angular_velocity())
+            light_state = (
+                int(actor.get_light_state())
+                if actor.type_id.startswith("vehicle.")
+                else None
+            )
+        except RuntimeError as exc:
+            if not is_stale_actor_error(exc):
+                raise
+            return None
+
         record = {
-            "transform": transform_to_dict(actor_snapshot.get_transform()),
-            "velocity": vector_to_dict(actor_snapshot.get_velocity()),
-            "angular_velocity": vector_to_dict(actor_snapshot.get_angular_velocity()),
+            "transform": transform,
+            "velocity": velocity,
+            "angular_velocity": angular_velocity,
         }
 
-        if actor.type_id.startswith("vehicle."):
-            record["light_state"] = int(actor.get_light_state())
+        if light_state is not None:
+            record["light_state"] = light_state
 
         return record
 
@@ -215,10 +242,12 @@ class WorldStateRecorder:
         and BEFORE the spawn manager mutates the actor set.
         """
 
+        require_ego_alive(ego, f"world_state frame {local_frame_id}")
+
         ego_snapshot = snapshot.find(ego.id)
 
         if ego_snapshot is None:
-            raise RuntimeError(f"Ego actor {ego.id} missing from world snapshot.")
+            raise EgoActorLostError(f"Ego actor {ego.id} missing from world snapshot.")
 
         ego_record = {
             "transform": transform_to_dict(ego_snapshot.get_transform()),
@@ -228,6 +257,7 @@ class WorldStateRecorder:
 
         actors = {}
         current_canonical_ids = set()
+        stale_actor_omissions = []
 
         for managed in managed_actors:
             actor = managed["actor"]
@@ -235,9 +265,23 @@ class WorldStateRecorder:
             if actor is None or not actor.is_alive:
                 continue
 
+            if actor.id == ego.id:
+                raise EgoActorLostError(
+                    f"Ego actor {ego.id} is in the background managed_actors list."
+                )
+
             record = self._actor_record(actor, snapshot, managed["category"])
 
             if record is None:
+                if snapshot.find(actor.id) is not None:
+                    # In this sample's snapshot but gone from the registry
+                    # before its RPC: omitted here and therefore from the
+                    # labels (annotation runs after this) and every replay.
+                    stale_actor_omissions.append(int(actor.id))
+                    print(
+                        f"[WorldState] frame={local_frame_id} omitted stale "
+                        f"background actor id={actor.id} ({managed['category']})"
+                    )
                 continue
 
             canonical_id = int(actor.id)
@@ -276,6 +320,11 @@ class WorldStateRecorder:
             "removed": removed,
             "traffic_lights": traffic_lights,
         }
+
+        # Only present when non-empty so ordinary frames keep the exact
+        # pre-existing schema (replay/paired_validation ignore this key).
+        if stale_actor_omissions:
+            state["stale_actor_omissions"] = stale_actor_omissions
 
         with open(
             os.path.join(self.state_dir, f"{frame_name(local_frame_id)}.json"),

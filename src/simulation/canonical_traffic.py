@@ -1,6 +1,7 @@
 import carla
 import numpy as np
 
+from src.simulation.actor_lifecycle import is_stale_actor_error
 from src.simulation.pedestrian import get_walker_blueprints
 from src.simulation.traffic import (
     configure_actor_traffic_manager,
@@ -255,24 +256,32 @@ class CanonicalBackgroundTraffic:
         self.traffic_manager.vehicle_percentage_speed_difference(actor, speed_difference)
 
     def _destroy_managed_actor(self, managed):
+        # Every caller removes `managed` from self.managed_actors right after
+        # this, so no stale reference survives the update. An actor that is
+        # already gone is fine; any other RuntimeError would leave an
+        # orphan actor in the world (rendered + annotated, but absent from
+        # world_state/replay), so it propagates instead of being swallowed.
 
         try:
             if managed["controller"] is not None and managed["controller"].is_alive:
                 managed["controller"].stop()
-        except RuntimeError:
-            pass
+        except RuntimeError as exc:
+            if not is_stale_actor_error(exc):
+                raise
 
         try:
             if managed["controller"] is not None and managed["controller"].is_alive:
                 managed["controller"].destroy()
-        except RuntimeError:
-            pass
+        except RuntimeError as exc:
+            if not is_stale_actor_error(exc):
+                raise
 
         try:
             if managed["actor"] is not None and managed["actor"].is_alive:
                 managed["actor"].destroy()
-        except RuntimeError:
-            pass
+        except RuntimeError as exc:
+            if not is_stale_actor_error(exc):
+                raise
 
     def update(self, local_frame_id, current_object_count=None):
 
