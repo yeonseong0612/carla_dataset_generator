@@ -194,6 +194,18 @@ cfg.TRAFFIC.IGNORE_SIGNS_PERCENTAGE = 0.0
 cfg.TRAFFIC.IGNORE_VEHICLES_PERCENTAGE = 0.0
 cfg.TRAFFIC.IGNORE_WALKERS_PERCENTAGE = 0.0
 
+# Canonical-geometry driving policy: vehicles do not use the traffic-light
+# signal state for driving decisions. Traffic-light actors, meshes and state
+# cycling are untouched; vehicle/walker avoidance and stop signs are
+# unaffected. Only consulted while generating canonical geometry -- weather
+# replay never runs Traffic Manager / BasicAgent.
+#   NPC: True -> traffic_manager.ignore_lights_percentage(actor, 100.0)
+#        (False falls back to IGNORE_LIGHTS_PERCENTAGE above)
+#   Ego: True -> RouteController(traffic_light_policy="ignore")
+#        -> BasicAgent.ignore_traffic_lights(active=True)
+cfg.TRAFFIC.NPC_IGNORE_TRAFFIC_LIGHTS = True
+cfg.TRAFFIC.EGO_IGNORE_TRAFFIC_LIGHTS = True
+
 #################################################################
 ### Pedestrian
 #################################################################

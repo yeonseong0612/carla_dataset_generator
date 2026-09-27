@@ -240,5 +240,116 @@ class TrafficLightGroupStateUntouchedTest(unittest.TestCase):
         self.assertEqual(source.count("configure_traffic_lights(world, cfg)"), 1)
 
 
+# ================================================================
+# Traffic-light ignore driving policy (canonical geometry only)
+# ================================================================
+
+class FakeTrafficManager:
+    def __init__(self):
+        self.calls = {}
+
+    def __getattr__(self, name):
+        def record(actor, value):
+            self.calls[name] = value
+        return record
+
+
+class FakeAutopilotActor:
+    def __init__(self):
+        self.autopilot = None
+
+    def set_autopilot(self, enabled, port):
+        self.autopilot = (enabled, port)
+
+
+class TrafficLightIgnorePolicyTest(unittest.TestCase):
+
+    def test_production_defaults_ignore_lights(self):
+        self.assertIs(cfg.TRAFFIC.NPC_IGNORE_TRAFFIC_LIGHTS, True)
+        self.assertIs(cfg.TRAFFIC.EGO_IGNORE_TRAFFIC_LIGHTS, True)
+        self.assertEqual(collect_dataset.TRAFFIC_LIGHT_POLICY, "ignore")
+
+    def test_other_traffic_rules_unchanged(self):
+        # Scope is traffic lights only: vehicle/walker avoidance and
+        # stop signs stay at their existing values.
+        self.assertEqual(cfg.TRAFFIC.IGNORE_VEHICLES_PERCENTAGE, 0.0)
+        self.assertEqual(cfg.TRAFFIC.IGNORE_WALKERS_PERCENTAGE, 0.0)
+        self.assertEqual(cfg.TRAFFIC.IGNORE_SIGNS_PERCENTAGE, 0.0)
+
+    def test_npc_actor_ignores_lights_but_not_vehicles(self):
+        from src.simulation.traffic import configure_actor_traffic_manager
+
+        tm = FakeTrafficManager()
+        actor = FakeAutopilotActor()
+        configure_actor_traffic_manager(actor, tm, cfg)
+
+        self.assertEqual(tm.calls["ignore_lights_percentage"], 100.0)
+        self.assertEqual(tm.calls["ignore_vehicles_percentage"], 0.0)
+        self.assertEqual(tm.calls["ignore_walkers_percentage"], 0.0)
+        self.assertEqual(tm.calls["ignore_signs_percentage"], 0.0)
+
+    def test_npc_flag_off_falls_back_to_legacy_percentage(self):
+        from easydict import EasyDict
+        from src.simulation.traffic import get_npc_ignore_lights_percentage
+
+        local = EasyDict({"TRAFFIC": {"NPC_IGNORE_TRAFFIC_LIGHTS": False, "IGNORE_LIGHTS_PERCENTAGE": 0.0}})
+        self.assertEqual(get_npc_ignore_lights_percentage(local), 0.0)
+
+    def test_ego_route_controller_calls_basic_agent_ignore(self):
+        import types
+        from unittest import mock
+        import src.navigation.controller as controller_module
+
+        calls = []
+
+        class RecordingAgent:
+            def __init__(self, vehicle, target_speed=None):
+                pass
+
+            def get_local_planner(self):
+                return types.SimpleNamespace(set_global_plan=lambda *a, **k: None)
+
+            def ignore_traffic_lights(self, active=True):
+                calls.append(active)
+
+        route = [(types.SimpleNamespace(index=i), "LANEFOLLOW") for i in range(3)]
+
+        with mock.patch.object(controller_module, "BasicAgent", RecordingAgent):
+            controller_module.RouteController(
+                object(), route, traffic_light_policy=collect_dataset.TRAFFIC_LIGHT_POLICY,
+            )
+
+        self.assertEqual(calls, [True])
+
+    def test_installed_basic_agent_supports_ignore_traffic_lights(self):
+        # The real CARLA agent (not a guess): the method exists and only
+        # gates the traffic-light hazard, never the vehicle-obstacle check.
+        from agents.navigation.basic_agent import BasicAgent
+
+        self.assertTrue(callable(getattr(BasicAgent, "ignore_traffic_lights", None)))
+        tl_source = inspect.getsource(BasicAgent._affected_by_traffic_light)
+        veh_source = inspect.getsource(BasicAgent._vehicle_obstacle_detected)
+        self.assertIn("self._ignore_traffic_lights", tl_source)
+        self.assertNotIn("_ignore_traffic_lights", veh_source)
+
+    def test_policy_does_not_touch_signal_state(self):
+        source = inspect.getsource(collect_dataset.log_traffic_light_policy)
+
+        for forbidden in ("set_state", "freeze", "TrafficLightState", "ignore_vehicles("):
+            self.assertNotIn(forbidden, source)
+
+    def test_policy_logged_once_at_canonical_init_not_in_replay(self):
+        canonical = inspect.getsource(collect_dataset.generate_canonical_geometry)
+        replay = inspect.getsource(collect_dataset.replay_condition)
+
+        self.assertEqual(canonical.count("log_traffic_light_policy("), 1)
+        self.assertLess(
+            canonical.index("log_traffic_light_policy("),
+            canonical.index("for simulation_tick_idx in range("),
+        )
+        for needle in ("log_traffic_light_policy(", "RouteController(", "traffic_manager", "set_autopilot"):
+            self.assertNotIn(needle, replay)
+
+
 if __name__ == "__main__":
     unittest.main()

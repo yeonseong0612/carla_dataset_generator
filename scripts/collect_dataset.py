@@ -123,6 +123,7 @@ from src.simulation.environment import disable_static_traffic_objects
 from src.simulation.traffic import (
     configure_traffic_manager,
     destroy_traffic_vehicles,
+    get_npc_ignore_lights_percentage,
 )
 
 from src.simulation.pedestrian import (
@@ -202,7 +203,11 @@ ROUTE_SAMPLING_RESOLUTION = 2.0
 CRUISE_SPEED_KMH = 30.0
 MIN_CURVE_SPEED_KMH = 12.0
 
-TRAFFIC_LIGHT_POLICY = "obey"
+# Canonical ego only (replay has no controller) -- see
+# cfg.TRAFFIC.EGO_IGNORE_TRAFFIC_LIGHTS.
+TRAFFIC_LIGHT_POLICY = (
+    "ignore" if cfg.TRAFFIC.EGO_IGNORE_TRAFFIC_LIGHTS else "obey"
+)
 
 WARMUP_FRAMES = 20
 
@@ -827,6 +832,34 @@ def configure_traffic_lights(world, cfg):
     return {"configured": configured, "failed": len(failures)}
 
 
+def log_traffic_light_policy(route_controller, cfg):
+    """
+    One-shot canonical-init log of the vehicle traffic-light driving
+    policy. Signal state and light cycling are left to CARLA; this only
+    reports whether vehicles use the signal for driving decisions.
+    """
+    npc_percentage = get_npc_ignore_lights_percentage(cfg)
+    npc_mode = "IGNORE" if npc_percentage >= 100.0 else "OBEY"
+
+    # BasicAgent keeps the flag set by ignore_traffic_lights() here; report
+    # the agent's actual state rather than the requested policy.
+    ego_ignores = getattr(route_controller.agent, "_ignore_traffic_lights", None)
+
+    if ego_ignores is None:
+        ego_mode = f"UNKNOWN (policy={route_controller.traffic_light_policy})"
+    else:
+        ego_mode = "IGNORE" if ego_ignores else "OBEY"
+
+    print(f"[TrafficPolicy] NPC traffic lights: {npc_mode} ({npc_percentage:.0f}%)")
+    print(f"[TrafficPolicy] Ego traffic lights: {ego_mode}")
+    print(
+        f"[TrafficPolicy] Vehicle collision avoidance: unchanged "
+        f"(NPC ignore_vehicles={cfg.TRAFFIC.IGNORE_VEHICLES_PERCENTAGE:.0f}%, "
+        f"ego ignore_vehicles="
+        f"{getattr(route_controller.agent, '_ignore_vehicles', 'n/a')})"
+    )
+
+
 STATIONARY_SPEED_THRESHOLD_MPS = 0.5
 STATIONARY_DIAGNOSTIC_FRAMES = (0, 1, 5, 10)
 
@@ -1356,6 +1389,8 @@ def generate_canonical_geometry(
                 ),
             )
         )
+
+        log_traffic_light_policy(route_controller, cfg)
 
         # ====================================================
         # Gamma-policy initial actor spawn

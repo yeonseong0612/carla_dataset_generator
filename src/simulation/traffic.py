@@ -72,11 +72,18 @@ def prepare_blueprint(blueprint, rng):
     return blueprint
 
 
+def get_npc_ignore_lights_percentage(cfg):
+    if cfg.TRAFFIC.get("NPC_IGNORE_TRAFFIC_LIGHTS", False):
+        return 100.0
+
+    return cfg.TRAFFIC.IGNORE_LIGHTS_PERCENTAGE
+
+
 def configure_actor_traffic_manager(actor, traffic_manager, cfg):
     actor.set_autopilot(True, cfg.TRAFFIC_MANAGER.PORT)
     traffic_manager.vehicle_percentage_speed_difference(actor, cfg.TRAFFIC.SPEED_DIFFERENCE)
     traffic_manager.auto_lane_change(actor, cfg.TRAFFIC.AUTO_LANE_CHANGE)
-    traffic_manager.ignore_lights_percentage(actor, cfg.TRAFFIC.IGNORE_LIGHTS_PERCENTAGE)
+    traffic_manager.ignore_lights_percentage(actor, get_npc_ignore_lights_percentage(cfg))
     traffic_manager.ignore_signs_percentage(actor, cfg.TRAFFIC.IGNORE_SIGNS_PERCENTAGE)
     traffic_manager.ignore_vehicles_percentage(actor, cfg.TRAFFIC.IGNORE_VEHICLES_PERCENTAGE)
     traffic_manager.ignore_walkers_percentage(actor, cfg.TRAFFIC.IGNORE_WALKERS_PERCENTAGE)
