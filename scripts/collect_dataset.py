@@ -213,7 +213,7 @@ WARMUP_FRAMES = 20
 
 # Safety guard.
 # Normal collection should terminate by route completion.
-MAX_FRAMES_PER_SEQUENCE = 20000
+MAX_FRAMES_PER_SEQUENCE = 60000
 
 COLLECTOR_TIMEOUT = 10.0
 
