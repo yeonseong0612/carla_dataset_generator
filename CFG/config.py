@@ -250,7 +250,7 @@ cfg.SPAWN.MIN_CROSS_LANE_SPACING = 3.0
 # Raised 25.0 -> 80.0 (traffic-generation final tuning task) to further
 # reduce how often a single same-lane lead vehicle dominates the camera
 # view; the rule/paths are unchanged, only this threshold moved.
-cfg.SPAWN.MIN_SAME_LANE_FRONT_GAP_M = 80.0
+cfg.SPAWN.MIN_SAME_LANE_FRONT_GAP_M = 60.0
 
 # Ticks to advance the simulation (world.tick(), no controls/recording)
 # after ego + initial traffic + traffic-manager configuration are all in
@@ -356,11 +356,11 @@ cfg.SPAWN.CANONICAL_SPEED_JITTER_PCT = 10.0
 # ONLY things this recalibration changes -- FrameObjectGammaSchedule's
 # sampling code, the spawn/prune controller, and the camera-valid
 # filtering pipeline are all untouched.
-cfg.SPAWN.FRAME_OBJECT_GAMMA_SHAPE = 9.0
+cfg.SPAWN.FRAME_OBJECT_GAMMA_SHAPE = 11.0
 cfg.SPAWN.FRAME_OBJECT_GAMMA_SCALE = 1.0
 
-cfg.SPAWN.FRAME_OBJECT_MIN = 4
-cfg.SPAWN.FRAME_OBJECT_MAX = 15
+cfg.SPAWN.FRAME_OBJECT_MIN = 5
+cfg.SPAWN.FRAME_OBJECT_MAX = 18
 
 # A single Gamma-drawn target is held for a whole segment of consecutive
 # frames (segment length itself uniform-random in this range), never
