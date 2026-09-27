@@ -7,8 +7,10 @@ NOT part of the dataset-generation pipeline (scripts/collect_dataset.py) --
 this script exists purely so a team can visually compare how individual
 CARLA WeatherParameters fields (and a few composite "severity profiles")
 affect a front RGB camera image, in order to pick DOE factors/levels for
-a later full-factorial experiment. It does not touch, import, or modify
-any file under src/ or scripts/collect_dataset.py.
+a later full-factorial experiment. It does not touch or modify any file
+under src/ or scripts/collect_dataset.py; it only imports the shared DOE
+weather definition from src/simulation/weather_profiles.py, which the DOE
+dataset collection also uses.
 
 Assumes a CARLA 0.9.16 server is already running separately (this script
 only connects to it -- it never launches CARLA.exe).
@@ -78,6 +80,16 @@ sys.path.insert(0, str(CARLA_PYTHONAPI))
 import carla  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+# DOE level -> WeatherParameters mapping and the fixed non-factor fields
+# are shared with DOE dataset collection (scripts/run_doptimal_dataset.py)
+# so the visualized levels are exactly the collected ones.
+from src.simulation.weather_profiles import (  # noqa: E402
+    DOE_FIXED_FIELDS,
+    FOG_PROFILES as DOE_FOG_PROFILES,
+    RAIN_PROFILES as DOE_RAIN_PROFILES,
+)
 
 
 # ====================================================================
@@ -104,16 +116,19 @@ DEFAULT_WARMUP_TICKS = 5
 
 # Weather fields NOT swept in this task (deliberately excluded --
 # task section 1): held fixed at these values for every capture,
-# everywhere, so they can never confound a sweep.
-CLOUDINESS_FIXED = 10.0
-WIND_INTENSITY_FIXED = 10.0
-SUN_AZIMUTH_FIXED = 0.0
+# everywhere, so they can never confound a sweep. Taken from the shared
+# DOE definition (src/simulation/weather_profiles.py); wind follows the
+# dataset's zero-wind policy.
+CLOUDINESS_FIXED = DOE_FIXED_FIELDS["cloudiness"]
+WIND_INTENSITY_FIXED = DOE_FIXED_FIELDS["wind_intensity"]
+SUN_AZIMUTH_FIXED = DOE_FIXED_FIELDS["sun_azimuth_angle"]
 
 # "Weather degradation off" baseline reused by every non-rain/fog sweep
-# so only the swept field(s) differ from a clean baseline.
+# so only the swept field(s) differ from a clean baseline (= the DOE
+# Dry + Clear levels).
 DEGRADATION_OFF = dict(
-    fog_density=0.0, fog_distance=0.0, fog_falloff=0.0,
-    precipitation=0.0, wetness=0.0, precipitation_deposits=0.0,
+    **DOE_FOG_PROFILES["Clear"],
+    **DOE_RAIN_PROFILES["Dry"],
 )
 
 # Baseline sun used whenever illumination itself isn't being swept.
@@ -266,22 +281,13 @@ def precipitation_deposits_sweep():
     return "precipitation_deposits", items
 
 
-# Composite profiles -- visualization candidates only, NOT final DOE
-# levels (task section 6).
+# Composite profiles = the final DOE Rain/Fog levels, defined once in
+# src/simulation/weather_profiles.py. Lower-case names keep the existing
+# output filenames (fog_profile_clear.png, ...).
 
-FOG_PROFILES = [
-    ("clear", dict(fog_density=0.0, fog_distance=0.0, fog_falloff=0.0)),
-    ("light", dict(fog_density=25.0, fog_distance=100.0, fog_falloff=1.0)),
-    ("moderate", dict(fog_density=50.0, fog_distance=50.0, fog_falloff=1.0)),
-    ("heavy", dict(fog_density=75.0, fog_distance=20.0, fog_falloff=1.0)),
-]
+FOG_PROFILES = [(name.lower(), dict(values)) for name, values in DOE_FOG_PROFILES.items()]
 
-RAIN_PROFILES = [
-    ("dry", dict(precipitation=0.0, wetness=0.0, precipitation_deposits=0.0)),
-    ("light", dict(precipitation=25.0, wetness=30.0, precipitation_deposits=15.0)),
-    ("moderate", dict(precipitation=50.0, wetness=60.0, precipitation_deposits=40.0)),
-    ("heavy", dict(precipitation=80.0, wetness=90.0, precipitation_deposits=70.0)),
-]
+RAIN_PROFILES = [(name.lower(), dict(values)) for name, values in DOE_RAIN_PROFILES.items()]
 
 
 def fog_profile_sweep():

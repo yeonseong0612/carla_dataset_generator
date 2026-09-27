@@ -36,6 +36,13 @@ night_fog
      foliage/grass at different positions. make_weather() overrides
      wind_intensity AFTER the preset / custom parameters are built, so it
      also holds for the CARLA presets (which carry their own wind values).
+
+5. D-optimal DOE conditions:
+   - Besides the six named conditions above, make_weather() accepts DOE
+     condition names such as "doe_C017_sun+30_rain-Light_fog-Heavy".
+   - Their Sun / Rain / Fog level -> parameter mapping lives ONLY in
+     src/simulation/weather_profiles.py (shared with the DOE
+     visualization tools), never redefined here.
 '''
 
 import carla
@@ -95,6 +102,15 @@ def _base_weather(condition):
             fog_falloff=0.1,
             wetness=0.0,
         )
+
+    # Imported lazily: weather_profiles reads WEATHER_WIND_INTENSITY from
+    # this module.
+    from src.simulation.weather_profiles import make_doe_weather, parse_doe_condition_name
+
+    doe = parse_doe_condition_name(condition)
+
+    if doe is not None:
+        return make_doe_weather(doe["sun"], doe["rain"], doe["fog"])
 
     raise ValueError(f"Unknown weather condition: {condition}")
 

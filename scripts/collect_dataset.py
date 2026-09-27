@@ -337,6 +337,35 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Single seed for every stochastic component of the canonical "
+            "run: overrides cfg.RANDOM / TRAFFIC / PEDESTRIAN / SPAWN .SEED "
+            "(Traffic Manager, pedestrians, Gamma spawn policy, canonical "
+            "background traffic). Omit to keep the config values. Seeds "
+            "are recorded in geometry/sequence.json; every weather is a "
+            "replay of that one geometry, so traffic is identical across "
+            "conditions. Use a separate --output-root per seed."
+        ),
+    )
+
+    parser.add_argument(
+        "--host",
+        type=str,
+        default=cfg.CARLA.HOST,
+        help="CARLA server host (default: cfg.CARLA.HOST).",
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=cfg.CARLA.PORT,
+        help="CARLA server RPC port (default: cfg.CARLA.PORT).",
+    )
+
+    parser.add_argument(
         "--no-traffic",
         action="store_true",
         help="Disable background traffic (canonical run).",
@@ -401,6 +430,21 @@ def parse_args():
 # ============================================================
 # Utilities
 # ============================================================
+
+def apply_seed_override(seed):
+    """
+    --seed: one value for every seeded component. Must run before the
+    Traffic Manager is configured / anything is spawned (all of them read
+    cfg at call time).
+    """
+
+    seed = int(seed)
+
+    cfg.RANDOM.SEED = seed
+    cfg.TRAFFIC.SEED = seed
+    cfg.PEDESTRIAN.SEED = seed
+    cfg.SPAWN.SEED = seed
+
 
 def route_xml_path(town):
     return os.path.join(
@@ -2945,6 +2989,10 @@ def main():
 
     args = parse_args()
 
+    if args.seed is not None:
+        apply_seed_override(args.seed)
+        print(f"[Seed] --seed {args.seed}: random/traffic/pedestrian/spawn seeds overridden")
+
     output_root = os.path.abspath(
         args.output_root
     )
@@ -2995,8 +3043,8 @@ def main():
     # --------------------------------------------------------
 
     client = carla.Client(
-        cfg.CARLA.HOST,
-        cfg.CARLA.PORT,
+        args.host,
+        args.port,
     )
 
     client.set_timeout(

@@ -88,6 +88,11 @@ from src.navigation.route import (  # noqa: E402
     build_dense_route,
 )
 from src.simulation.weather import WEATHER_WIND_INTENSITY  # noqa: E402
+from src.simulation.weather_profiles import (  # noqa: E402
+    DOE_FIXED_FIELDS,
+    FOG_PROFILES,
+    RAIN_PROFILES,
+)
 
 
 # ====================================================================
@@ -129,12 +134,11 @@ CAMERA_ROTATION = carla.Rotation(
 # for every single capture in this whole tool. wind_intensity is pulled
 # directly from src/simulation/weather.py's production policy constant
 # (CLAUDE.md section 3: "wind_intensity는 모든 조건에서 0.0으로 고정") instead
-# of being redefined here. cloudiness / sun_azimuth values match the
-# constants already used for this exact same screening purpose in
-# scripts/visualize_doe_factors.py, kept identical for consistency
-# between the two tools.
-CLOUDINESS_FIXED = 10.0
-SUN_AZIMUTH_FIXED = 0.0
+# of being redefined here. cloudiness / sun_azimuth come from the shared
+# DOE definition (src/simulation/weather_profiles.py), also used by
+# scripts/visualize_doe_factors.py and DOE dataset collection.
+CLOUDINESS_FIXED = DOE_FIXED_FIELDS["cloudiness"]
+SUN_AZIMUTH_FIXED = DOE_FIXED_FIELDS["sun_azimuth_angle"]
 
 assert WEATHER_WIND_INTENSITY == 0.0, (
     "src.simulation.weather.WEATHER_WIND_INTENSITY changed from the 0.0 "
@@ -143,26 +147,16 @@ assert WEATHER_WIND_INTENSITY == 0.0, (
 )
 
 # --------------------------------------------------------------------
-# Level definitions. Rain/Fog values match scripts/visualize_doe_factors.py's
-# RAIN_PROFILES/FOG_PROFILES (same names, same 4-level scheme as the
-# D-optimal CSV's Rain/Fog columns) so both screening tools describe the
-# same physical conditions. Illumination values are exactly the D-optimal
-# CSV's Time levels.
+# Level definitions. Rain/Fog levels ARE the shared DOE profiles
+# (src/simulation/weather_profiles.py RAIN_PROFILES / FOG_PROFILES, same
+# names as the D-optimal CSV's Rain/Fog columns), so every DOE tool and
+# the DOE dataset collection describe the same physical conditions.
+# Illumination values are exactly the D-optimal CSV's Time levels.
 # --------------------------------------------------------------------
 
-RAIN_LEVELS = OrderedDict([
-    ("Dry",      dict(precipitation=0.0,  wetness=0.0,  precipitation_deposits=0.0)),
-    ("Light",    dict(precipitation=25.0, wetness=30.0, precipitation_deposits=15.0)),
-    ("Moderate", dict(precipitation=50.0, wetness=60.0, precipitation_deposits=40.0)),
-    ("Heavy",    dict(precipitation=80.0, wetness=90.0, precipitation_deposits=70.0)),
-])
+RAIN_LEVELS = RAIN_PROFILES
 
-FOG_LEVELS = OrderedDict([
-    ("Clear",    dict(fog_density=0.0,  fog_distance=0.0,   fog_falloff=0.0)),
-    ("Light",    dict(fog_density=25.0, fog_distance=100.0, fog_falloff=1.0)),
-    ("Moderate", dict(fog_density=50.0, fog_distance=50.0,  fog_falloff=1.0)),
-    ("Heavy",    dict(fog_density=75.0, fog_distance=20.0,  fog_falloff=1.0)),
-])
+FOG_LEVELS = FOG_PROFILES
 
 ILLUM_LEVELS = OrderedDict([
     (60,  dict(sun_altitude_angle=60.0)),

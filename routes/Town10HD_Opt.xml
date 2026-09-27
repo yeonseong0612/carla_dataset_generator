@@ -1,0 +1,16 @@
+<routes>
+  <route id="0" town="Town10HD">
+    <weathers>
+      <weather route_percentage="0" cloudiness="20.0" precipitation="0.0" precipitation_deposits="0.0" wetness="0.0" wind_intensity="10.0" sun_azimuth_angle="300.0" sun_altitude_angle="45.0" fog_density="2.0" fog_distance="0.75" fog_falloff="0.1" scattering_intensity="1.0" mie_scattering_scale="0.03"/>
+      <weather route_percentage="100" cloudiness="20.0" precipitation="0.0" precipitation_deposits="0.0" wetness="0.0" wind_intensity="10.0" sun_azimuth_angle="300.0" sun_altitude_angle="45.0" fog_density="2.0" fog_distance="0.75" fog_falloff="0.1" scattering_intensity="1.0" mie_scattering_scale="0.03"/>
+    </weathers>
+    <waypoints>
+      <position x="-37.2" y="126.8" z="0.0"/>
+      <position x="22.5" y="69.8" z="0.0"/>
+      <position x="46.1" y="32.4" z="0.0"/>
+      <position x="93.7" y="112.1" z="0.0"/>
+      <position x="-25.3" y="130.1" z="0.0"/>
+    </waypoints>
+    <scenarios/>
+  </route>
+</routes>
