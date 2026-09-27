@@ -356,11 +356,11 @@ cfg.SPAWN.CANONICAL_SPEED_JITTER_PCT = 10.0
 # ONLY things this recalibration changes -- FrameObjectGammaSchedule's
 # sampling code, the spawn/prune controller, and the camera-valid
 # filtering pipeline are all untouched.
-cfg.SPAWN.FRAME_OBJECT_GAMMA_SHAPE = 11.0
+cfg.SPAWN.FRAME_OBJECT_GAMMA_SHAPE = 10.0
 cfg.SPAWN.FRAME_OBJECT_GAMMA_SCALE = 1.0
 
-cfg.SPAWN.FRAME_OBJECT_MIN = 5
-cfg.SPAWN.FRAME_OBJECT_MAX = 18
+cfg.SPAWN.FRAME_OBJECT_MIN = 4
+cfg.SPAWN.FRAME_OBJECT_MAX = 16
 
 # A single Gamma-drawn target is held for a whole segment of consecutive
 # frames (segment length itself uniform-random in this range), never
