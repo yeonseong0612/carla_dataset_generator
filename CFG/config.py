@@ -100,7 +100,7 @@ cfg.SENSOR.LIDAR.RANGE = 130.0
 # the callback rate halves (20 Hz -> 10 Hz), which is the actual efficiency
 # win. points_per_second itself is unchanged.
 cfg.SENSOR.LIDAR.POINTS_PER_SECOND = 200000
-cfg.SENSOR.LIDAR.ROTATION_FREQUENCY = float(cfg.RECORDING.FPS)
+cfg.SENSOR.LIDAR.ROTATION_FREQUENCY = float(cfg.SIMULATION.FPS)
 
 cfg.SENSOR.LIDAR.HORIZONTAL_FOV = 180.0
 
