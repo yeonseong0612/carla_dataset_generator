@@ -360,7 +360,7 @@ def main():
         rgb_image = load_rgb(sequence_root, frame_id, args.camera)
 
         if args.bbox:
-            rgb_panel, _rgb_stats = render_rgb_projection(rgb_image, annotation, projector)
+            rgb_panel, _rgb_stats, _selected = render_rgb_projection(rgb_image, annotation, projector)
         else:
             rgb_panel = rgb_image
 

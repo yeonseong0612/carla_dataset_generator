@@ -690,7 +690,8 @@ def render_overlay_panel(rgb_full, annotation, lidar_xyz_ego, calibration, camer
     stats = None
 
     if annotation is not None:
-        image, stats = render_rgb_projection(image, annotation, projector)
+        # 3rd value (selected_projections) is only populated when logical_ids is given.
+        image, stats, _selected = render_rgb_projection(image, annotation, projector)
         draw_class_labels(image, annotation, projector)
 
     panel = letterbox(image)

@@ -996,7 +996,7 @@ def main():
         annotation = load_annotation(sequence_root, frame_id)
         image = load_rgb(sequence_root, frame_id, args.camera)
 
-        rendered_rgb, rgb_stats = render_rgb_projection(image, annotation, projector)
+        rendered_rgb, rgb_stats, _selected = render_rgb_projection(image, annotation, projector)
 
         lidar_arr = load_lidar(sequence_root, frame_id)
         lidar_xyz_ego, lidar_intensity = lidar_points_to_ego(lidar_arr, T_ego_from_lidar)
